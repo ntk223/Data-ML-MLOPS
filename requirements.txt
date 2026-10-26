@@ -1,0 +1,4 @@
+# LearnGuard ML/Data — runtime dependencies (M1–M5 batch pipeline)
+# Cài đặt: pip install -r requirements.txt
+pandas==3.1.0
+pyarrow==26.0.0

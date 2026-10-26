@@ -1,0 +1,9 @@
+# LearnGuard ML/Data — dev dependencies (EDA, notebooks, testing)
+# Cài đặt: pip install -r requirements-dev.txt
+-r requirements.txt
+matplotlib==3.11.2
+ipykernel==7.4.0
+nbformat==5.11.1
+nbclient==0.11.0
+jupyterlab==4.6.4
+pytest==9.1.1
