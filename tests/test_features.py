@@ -207,7 +207,7 @@ def test_imd_band_missing_flag():
 def test_split_assignment_follows_presentation_year():
     """Quyết định M4: chia theo KỲ HỌC, không random."""
     tables = base_tables()
-    # Thêm SV ở 2013J (validation) và 2014J (holdout)
+    # Thêm SV ở 2013J (train) và 2014J (holdout)
     extra_si = pd.DataFrame({
         "code_module": ["AAA", "AAA"], "code_presentation": ["2013J", "2014J"],
         "id_student": [201, 202], "gender": ["F", "M"], "region": ["Wales", "Wales"],
@@ -230,7 +230,7 @@ def test_split_assignment_follows_presentation_year():
     snap, _ = build_from_tables(tables)
     mapping = snap.set_index("id_student")["split"].to_dict()
     assert mapping[101] == "train"        # 2013B
-    assert mapping[201] == "validation"   # 2013J
+    assert mapping[201] == "train"        # 2013J
     assert mapping[202] == "holdout"      # 2014J
 
 
@@ -286,8 +286,8 @@ def test_end_to_end_build_writes_snapshot_and_ledger(tmp_path):
     ledger = json.loads(result.ledger_path.read_text())
     assert ledger["cutoff_day"] == 27
     assert ledger["source_hash"] and len(ledger["source_hash"]) == 64
-    assert ledger["split_rules"] == {"2013B": "train", "2013J": "validation",
-                                     "2014B": "holdout", "2014J": "holdout"}
+    assert ledger["split_rules"] == {"2013B": "train", "2013J": "train",
+                                     "2014B": "validation", "2014J": "holdout"}
     assert set(ledger["input_hashes"]) == {
         "courses", "assessments", "studentInfo", "studentRegistration", "studentAssessment", "studentVle"
     }

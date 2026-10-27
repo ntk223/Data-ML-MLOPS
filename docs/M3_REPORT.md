@@ -85,7 +85,7 @@ print(audit.status, gate.status)
 ## 7. Việc tiếp theo — M4
 
 1. Baseline Logistic Regression + candidate model trên snapshot M2
-2. **Temporal split**: train/validate 2013 → holdout 2014 (không random split — tránh trùng SV giữa train/test)
+2. **Temporal split**: train 2013B+J → validation 2014B → holdout 2014J (không random split — tránh trùng SV giữa train/test)
 3. Metrics: Recall@top-k, AUC, ECE, fairness slices (gender/region/disability/age), false negatives
 4. Tuning threshold CHỈ trên validation; NaN `avg_score_submitted` xử lý tường minh
 5. Model card + registry metadata

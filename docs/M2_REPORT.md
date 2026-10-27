@@ -111,10 +111,24 @@ build_feature_snapshot('artifacts/ingestion_m1_verify', 'artifacts/feature_snaps
 
 | Split | Presentation | Số dòng | At-risk % | Dùng để |
 |---|---|---:|---:|---|
-| `train` | 2013B | 4,127 | 49.3% | `model.fit()` |
-| `validation` | 2013J | 7,684 | 41.8% | Tuning threshold/hyperparameter — **chỉ** ở đây |
-| `holdout` | 2014B + 2014J | 15,724 | 44.0% | Đo 1 lần duy nhất khi báo cáo |
+| `train` | 2013B + 2013J | 11,811 | 44.4% | `model.fit()` |
+| `validation` | 2014B | 6,510 | 48.4% | Tuning threshold/hyperparameter — **chỉ** ở đây |
+| `holdout` | 2014J | 9,214 | 40.8% | Đo 1 lần duy nhất khi báo cáo |
+
+### Quyết định thiết kế — gộp 2013B+J làm train (sửa lần 1)
+
+**Lựa chọn:** train = cả 2 kỳ 2013 (11,811 dòng, ~3× so với chỉ 2013B) — ưu tiên dữ liệu train dồi dào. Giá đổi: holdout co từ cả năm 2014 (15,724 dòng/2 kỳ) xuống còn 2014J (9,214 dòng/1 kỳ).
+
+**Trade-off đã cân nhắc:**
+
+| | Gộp 2013 (đã chọn) | 2013B train / 2013J val |
+|---|---|---|
+| Train | 11,811 dòng — lợi thế với model high-capacity | 4,127 dòng |
+| Holdout | 9,214 dòng/1 kỳ — ước lượng đơn-điểm | 15,724 dòng/2 kỳ — cả năm 2014 nguyên vẹn |
+| Kênh "quyết định" | Tuning chạm vào 2014B → năm 2014 bị tiêu hao một phần | Tuning chỉ chạm 2013 → 2014 hoàn toàn untouched |
+
+**Phương án dự phòng (nếu cần cải thiện sau này):** quay lại chia 2013B train / 2013J validation — giữ cả năm 2014 làm holdout sạch, ước lượng trung thực hơn cho kịch bản production. Ngoài ra có thể dùng temporal K-fold CV trong tập train khi cần ổn định fit.
 
 Nguyên tắc: holdout chỉ chạm 1 lần; trùng SV giữa 2013/2014 là hiện tượng thật (không leakage — nhãn 2014 không nằm trong row 2013); M5 vẫn chấm điểm TOÀN BỘ cohort bất kể split.
 
-`snapshot_version` nâng cấp thành `cutoff:source_hash:rules_hash` — version đổi khi **cả** dữ liệu **hoặc** hợp đồng rule đổi. Snapshot mới: `snapshot-v1:cutoff27:35de8103:c593b405`, audit + gates đều `ok`.
+`snapshot_version` nâng cấp thành `cutoff:source_hash:rules_hash` — version đổi khi **cả** dữ liệu **hoặc** hợp đồng rule đổi. Snapshot hiện tại: `snapshot-v1:cutoff27:35de8103:39e10cfa`, audit + gates đều `ok`.

@@ -55,10 +55,10 @@ STATIC_FEATURES: tuple[str, ...] = (
 # không random — mô phỏng đúng kịch bản production (train kỳ cũ → dự đoán kỳ mới).
 # Data engineer cấp hợp đồng này qua cột `split`; ML engineer chỉ đọc và tuân theo.
 SPLIT_RULES: dict[str, str] = {
-    "2013B": "train",       # kỳ sớm nhất — model học từ đây
-    "2013J": "validation",  # tuning threshold/hyperparameter CHỈ ở đây
-    "2014B": "holdout",     # kỳ sau — chạm 1 lần duy nhất khi báo cáo
-    "2014J": "holdout",
+    "2013B": "train",
+    "2013J": "train",       # gộp cả 2 kỳ 2013 — ưu tiên dữ liệu train nhiều (quyết định chủ project)
+    "2014B": "validation",  # tuning threshold/hyperparameter CHỈ ở đây
+    "2014J": "holdout",     # kỳ duy nhất chưa bị tiêu hao — chạm 1 lần khi báo cáo
 }
 
 KEYS = ("code_module", "code_presentation", "id_student")
