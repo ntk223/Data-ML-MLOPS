@@ -144,23 +144,29 @@ print('PIPELINE OK —', snap.snapshot_version)
 | Behavioral (as-of ≤ 27) | `n_clicks_before_cutoff`, `click_trend_w3_w4`, `n_submitted_before_cutoff`, `avg_score_submitted` | `avg_score_submitted` null = SV chưa có điểm nào — **xử lý tường minh ở M4, không fillna mù** |
 | Cờ hệ thống | `insufficient_data` | SV ít tương tác — cân nhắc khi phân tích |
 
-### 5.2 Cách load đúng
+### 5.2 Cách load đúng — DÙNG LOADER CHUẨN, không tự lọc tay
 
 ```python
-import pandas as pd
+from learnguard.data.loading import load_snapshot_splits, MODEL_FEATURE_COLUMNS
 
-snap = pd.read_parquet("artifacts/feature_snapshot_m2/snapshot.parquet")
+splits = load_snapshot_splits("artifacts/feature_snapshot_m2/snapshot.parquet")
 
-train = snap[snap["split"] == "train"]        # 11,811 dòng (2013B+2013J) → model.fit()
-val   = snap[snap["split"] == "validation"]   #  6,510 dòng (2014B)       → tuning THRESHOLD/hyperparam
-test  = snap[snap["split"] == "holdout"]      #  9,214 dòng (2014J)       → CHẠM 1 LẦN khi báo cáo
+print(splits.snapshot_version)          # bắt buộc ghi vào model card
+train, val, test = splits.train, splits.validation, splits.holdout
+# train 11,811 (2013B+2013J) · val 6,510 (2014B) · test 9,214 (2014J)
+
+# Lấy (X, y) theo đúng 15 cột feature được cam kết, đúng thứ tự:
+X_tr, y_tr = splits.x_y("train")
+X_val, y_val = splits.x_y("validation")
 ```
+
+Loader tự kiểm tra: cột `split` tồn tại + đúng domain, cả 3 tập đều có dòng, ledger đi kèm — vi phạm nào fail lớn thay vì trả về dữ liệu lờ mờ. **Không `snap[snap["split"] == ...]` thủ công** — code lọc tay phân kỳ, không ai audit được.
 
 ### 5.3 Ba luật vàng (vi phạm = mất giá trị khoa học của toàn pipeline)
 
 1. **Tune CHỈ trên `validation`** — chọn threshold, hyperparameter, model. Không bao giờ tune trên holdout.
 2. **`holdout` chạm đúng 1 LẦN** — chạy evaluate sau khi chốt config, lấy số báo cáo. Muốn thay đổi gì → sửa config → chu kỳ sau mới được chạm lại.
-3. **Không tạo file train/test riêng** — luôn lọc từ cột `split` của snapshot. Copy tách file = mất audit trail.
+3. **Không tạo file train/test riêng, không lọc tay** — luôn dùng `load_snapshot_splits()`. Copy tách file hoặc lọc thủ công = mất audit trail.
 
 ### 5.4 Snapshot version & ledger
 
