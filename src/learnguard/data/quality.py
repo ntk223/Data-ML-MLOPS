@@ -40,7 +40,9 @@ EXPECTED_COLUMNS = tuple(KEYS) + tuple(STATIC_FEATURES) + (
     "insufficient_data",
     "final_result",
     "label",
+    "split",
 )
+VALID_SPLITS = {"train", "validation", "holdout"}
 
 _PSI_EPSILON = 1e-6
 # PSI không đáng tin với mẫu nhỏ (nhiễu lấy mẫu lấn át tín hiệu trôi — đã chứng minh
@@ -84,6 +86,9 @@ class DataQualityGate:
         else:
             if not snap["label"].isin([0, 1]).all():
                 report.errors.append("schema_label_out_of_domain")
+            if not snap["split"].isin(VALID_SPLITS).all():
+                bad = sorted(snap.loc[~snap["split"].isin(VALID_SPLITS), "split"].unique())
+                report.errors.append(f"schema_split_out_of_domain:{','.join(map(str, bad))}")
             dup = snap.duplicated(subset=list(KEYS), keep=False)
             if dup.any():
                 report.errors.append(f"schema_duplicate_keys:{int(dup.sum())}")

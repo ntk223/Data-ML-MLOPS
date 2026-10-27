@@ -3,6 +3,7 @@
 import json
 
 import pandas as pd
+import pytest
 
 from learnguard.data.features import (
     FEATURE_CATALOG,
@@ -93,6 +94,7 @@ def build_from_tables(tables, cutoff=27, tmp_path=None):
         fdf = builder.build_feature(f, tables, cutoff)
         on = ["code_module", "code_presentation"] if f.name == "module_presentation" else KEYS
         snap = snap.merge(fdf, on=on, how="left")
+    snap = builder.assign_split(snap)
     for col in ("n_clicks_before_cutoff", "click_trend_w3_w4", "n_submitted_before_cutoff"):
         snap[col] = snap[col].fillna(0)
     snap["insufficient_data"] = (snap["n_clicks_before_cutoff"] == 0) & (snap["n_submitted_before_cutoff"] == 0)
@@ -200,6 +202,64 @@ def test_imd_band_missing_flag():
     assert bool(snap[snap["id_student"] == 101].iloc[0]["imd_band_missing"]) is False
 
 
+# ---- temporal split ---------------------------------------------------------
+
+def test_split_assignment_follows_presentation_year():
+    """Quyết định M4: chia theo KỲ HỌC, không random."""
+    tables = base_tables()
+    # Thêm SV ở 2013J (validation) và 2014J (holdout)
+    extra_si = pd.DataFrame({
+        "code_module": ["AAA", "AAA"], "code_presentation": ["2013J", "2014J"],
+        "id_student": [201, 202], "gender": ["F", "M"], "region": ["Wales", "Wales"],
+        "highest_education": ["HE Qualification"] * 2, "imd_band": ["10-20", "10-20"],
+        "age_band": ["0-35"] * 2, "num_of_prev_attempts": [0, 0],
+        "studied_credits": [60, 60], "disability": ["N", "N"],
+        "final_result": ["Pass", "Fail"],
+    })
+    extra_sr = pd.DataFrame({
+        "code_module": ["AAA", "AAA"], "code_presentation": ["2013J", "2014J"],
+        "id_student": [201, 202], "date_registration": [-5.0, -5.0],
+        "date_unregistration": [float("nan")] * 2,
+    })
+    tables["studentInfo"] = pd.concat([tables["studentInfo"], extra_si], ignore_index=True)
+    tables["studentRegistration"] = pd.concat([tables["studentRegistration"], extra_sr], ignore_index=True)
+    tables["courses"] = pd.concat([tables["courses"], pd.DataFrame(
+        {"code_module": ["AAA", "AAA"], "code_presentation": ["2013J", "2014J"],
+         "module_presentation_length": [240, 240]})], ignore_index=True)
+
+    snap, _ = build_from_tables(tables)
+    mapping = snap.set_index("id_student")["split"].to_dict()
+    assert mapping[101] == "train"        # 2013B
+    assert mapping[201] == "validation"   # 2013J
+    assert mapping[202] == "holdout"      # 2014J
+
+
+def test_split_unknown_presentation_fails_loudly():
+    """Kỳ không có rule → fail lớn, KHÔNG gán im lặng."""
+    tables = base_tables()
+    tables["studentRegistration"] = pd.concat([tables["studentRegistration"], pd.DataFrame(
+        {"code_module": ["AAA"], "code_presentation": ["2015B"], "id_student": [999],
+         "date_registration": [-5.0], "date_unregistration": [float("nan")]})], ignore_index=True)
+    builder = PointInTimeFeatureBuilder()
+    cohort = builder.build_cohort(tables, 27)
+    with pytest.raises(ValueError, match="unknown_presentation_for_split"):
+        builder.assign_split(cohort)
+
+
+def test_split_rules_hashed_into_version():
+    """Đổi split rule → snapshot_version phải đổi (rule là một phần của hợp đồng)."""
+    from learnguard.data.features import _feature_list_hash
+    import learnguard.data.features as feat_mod
+    before = _feature_list_hash()
+    old = dict(feat_mod.SPLIT_RULES)
+    try:
+        feat_mod.SPLIT_RULES["2014B"] = "train"  # type: ignore[index]
+        assert _feature_list_hash() != before
+    finally:
+        feat_mod.SPLIT_RULES.clear()
+        feat_mod.SPLIT_RULES.update(old)
+
+
 # ---- end-to-end + ledger ----------------------------------------------------
 
 def write_canonical(tmp_path, tables):
@@ -220,10 +280,14 @@ def test_end_to_end_build_writes_snapshot_and_ledger(tmp_path):
     snap = pd.read_parquet(result.snapshot_path)
     assert "label" in snap.columns and "final_result" in snap.columns
     assert "final_result" not in [f.name for f in FEATURE_CATALOG]  # target không nằm trong catalog
+    assert "split" in snap.columns  # temporal split — hợp đồng cho M4
+    assert set(snap["split"].unique()) == {"train"}  # fixture chỉ có 2013B
 
     ledger = json.loads(result.ledger_path.read_text())
     assert ledger["cutoff_day"] == 27
     assert ledger["source_hash"] and len(ledger["source_hash"]) == 64
+    assert ledger["split_rules"] == {"2013B": "train", "2013J": "validation",
+                                     "2014B": "holdout", "2014J": "holdout"}
     assert set(ledger["input_hashes"]) == {
         "courses", "assessments", "studentInfo", "studentRegistration", "studentAssessment", "studentVle"
     }

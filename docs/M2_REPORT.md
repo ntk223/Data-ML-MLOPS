@@ -102,3 +102,19 @@ build_feature_snapshot('artifacts/ingestion_m1_verify', 'artifacts/feature_snaps
 1. **Leakage audit suite**: future-event injection chạy như CI gate trên toàn pipeline
 2. **Quality gates**: schema validation, missingness, volume, PSI (phân bố trôi giữa snapshot)
 3. Gate fail → chặn pipeline, không xuất batch
+
+---
+
+## Phụ lục (2026-10-27) — Temporal split `train/validation/holdout`
+
+Đáp ứng yêu cầu của M4: cột **`split`** được thêm vào snapshot, gán **deterministic theo kỳ học** (không random — mô phỏng kịch bản production "train kỳ cũ → dự đoán kỳ mới"). Rule nằm trong `SPLIT_RULES` (`features.py`) + ghi vào ledger `split_rules`; kỳ lạ → `unknown_presentation_for_split` fail lớn.
+
+| Split | Presentation | Số dòng | At-risk % | Dùng để |
+|---|---|---:|---:|---|
+| `train` | 2013B | 4,127 | 49.3% | `model.fit()` |
+| `validation` | 2013J | 7,684 | 41.8% | Tuning threshold/hyperparameter — **chỉ** ở đây |
+| `holdout` | 2014B + 2014J | 15,724 | 44.0% | Đo 1 lần duy nhất khi báo cáo |
+
+Nguyên tắc: holdout chỉ chạm 1 lần; trùng SV giữa 2013/2014 là hiện tượng thật (không leakage — nhãn 2014 không nằm trong row 2013); M5 vẫn chấm điểm TOÀN BỘ cohort bất kể split.
+
+`snapshot_version` nâng cấp thành `cutoff:source_hash:rules_hash` — version đổi khi **cả** dữ liệu **hoặc** hợp đồng rule đổi. Snapshot mới: `snapshot-v1:cutoff27:35de8103:c593b405`, audit + gates đều `ok`.

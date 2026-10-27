@@ -31,6 +31,7 @@ def make_snapshot(n: int = 100, clicks_scale: float = 1.0, seed: int = 42) -> pd
             "avg_score_submitted": rng.normal(72, 15, n).clip(0, 100),
             "insufficient_data": False,
             "final_result": rng.choice(["Pass", "Fail", "Withdrawn", "Distinction"], n),
+            "split": rng.choice(["train", "validation", "holdout"], n),
         }
     )
     df["label"] = df["final_result"].isin(["Fail", "Withdrawn"]).astype(int)

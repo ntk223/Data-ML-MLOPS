@@ -51,6 +51,16 @@ STATIC_FEATURES: tuple[str, ...] = (
     "disability",
 )
 
+# Temporal split (quyết định M4, chốt trong IMPLEMENTATION_TODO): chia theo KỲ HỌC,
+# không random — mô phỏng đúng kịch bản production (train kỳ cũ → dự đoán kỳ mới).
+# Data engineer cấp hợp đồng này qua cột `split`; ML engineer chỉ đọc và tuân theo.
+SPLIT_RULES: dict[str, str] = {
+    "2013B": "train",       # kỳ sớm nhất — model học từ đây
+    "2013J": "validation",  # tuning threshold/hyperparameter CHỈ ở đây
+    "2014B": "holdout",     # kỳ sau — chạm 1 lần duy nhất khi báo cáo
+    "2014J": "holdout",
+}
+
 KEYS = ("code_module", "code_presentation", "id_student")
 
 
@@ -61,6 +71,7 @@ class AsOfLedger:
     source_hash: str
     feature_rules: dict[str, str] = field(default_factory=dict)
     cohort_rules: dict[str, str] = field(default_factory=dict)
+    split_rules: dict[str, str] = field(default_factory=dict)
     input_hashes: dict[str, str] = field(default_factory=dict)
     feature_list_hash: str = ""
     created_at: str = ""
@@ -161,6 +172,17 @@ class PointInTimeFeatureBuilder:
 
         raise KeyError(f"feature_not_in_catalog:{feature.name}")
 
+    # ---- temporal split ------------------------------------------------------
+
+    def assign_split(self, snapshot: pd.DataFrame) -> pd.DataFrame:
+        """Gán cột `split` theo SPLIT_RULES; kỳ lạ → fail lớn thay vì gán im lặng."""
+        snapshot = snapshot.copy()
+        snapshot["split"] = snapshot["code_presentation"].map(SPLIT_RULES)
+        if snapshot["split"].isna().any():
+            unknown = sorted(snapshot.loc[snapshot["split"].isna(), "code_presentation"].unique())
+            raise ValueError(f"unknown_presentation_for_split:{','.join(unknown)}")
+        return snapshot
+
     # ---- tổng hợp ---------------------------------------------------------
 
     def build(self, processed_dir: Path, output_path: Path,
@@ -209,18 +231,23 @@ class PointInTimeFeatureBuilder:
         )
         snapshot["label"] = snapshot["final_result"].map(TARGET_LABELS)
 
+        # Temporal split — hợp đồng cho M4
+        snapshot = self.assign_split(snapshot)
+
         snapshot = snapshot.sort_values(list(KEYS)).reset_index(drop=True)
         snapshot.to_parquet(output_path, index=False)
 
         feature_list_hash = _feature_list_hash()
         source_hash = _combined_source_hash(input_hashes)
-        version = f"snapshot-v1:cutoff{cutoff_day}:{source_hash[:12]}"
+        # Version = dữ liệu (source_hash) + hợp đồng rule (feature_list_hash gồm split rules)
+        version = f"snapshot-v1:cutoff{cutoff_day}:{source_hash[:8]}:{feature_list_hash[:8]}"
         ledger = AsOfLedger(
             cutoff_day=cutoff_day,
             snapshot_version=version,
             source_hash=source_hash,
             feature_rules={f.name: f"{f.aggregation} [{f.as_of_rule}]" for f in FEATURE_CATALOG},
             cohort_rules=getattr(self, "_cohort_rules", {}),
+            split_rules=dict(SPLIT_RULES),
             input_hashes=input_hashes,
             feature_list_hash=feature_list_hash,
             created_at=datetime.now(timezone.utc).isoformat(),
@@ -253,10 +280,10 @@ def _combined_source_hash(input_hashes: dict[str, str]) -> str:
 
 
 def _feature_list_hash() -> str:
-    combined = "\n".join(
-        f"{f.name}:{f.aggregation}:{f.as_of_rule}" for f in FEATURE_CATALOG
-    )
-    return sha256(combined.encode()).hexdigest()
+    lines = [f"{f.name}:{f.aggregation}:{f.as_of_rule}" for f in FEATURE_CATALOG]
+    # Split rule cũng là một "rule" của snapshot — đổi rule thì version phải đổi
+    lines += [f"split:{k}:{v}" for k, v in sorted(SPLIT_RULES.items())]
+    return sha256("\n".join(lines).encode()).hexdigest()
 
 
 def build_feature_snapshot(processed_dir: Path, output_path: Path,
