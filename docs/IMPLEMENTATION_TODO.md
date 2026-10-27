@@ -7,7 +7,7 @@
 - [x] Chốt schema bảy bảng OULAD và kiểu dữ liệu chuẩn. *(schema.py: dtype + enum + range + null policy, truy vết EDA 2026-10-26)*
 - [x] Implement ingestion, integrity checks, linting, quarantine và source hash. *(ingestion.py + 23 test pytest; verify OULAD thật: 0 quarantine, dedupe 787,170 exact-duplicate studentVle)*
 - [x] Hoàn thiện catalog với source, aggregation, as-of rule và feature kind. *(5 features; rule `n_clicks_before_cutoff` đã đồng bộ `date <= cutoff`)*
-- [ ] Implement cohort và snapshot tới cutoff ngày 27, kèm as-of ledger/version.
+- [x] Implement cohort và snapshot tới cutoff ngày 27, kèm as-of ledger/version. *(PointInTimeFeatureBuilder: cohort loại rút-lui-trước-cutoff; 5 features đúng as-of rule; ledger ghi source hash + version; 13 test — verify thật: 27,535 dòng, 0 leakage khi inject future-event)*
 - [ ] Implement leakage audit cho VLE và assessments.
 - [ ] Implement quality gate cho schema, missingness, volume và PSI.
 - [ ] Thêm kiểm thử cutoff, future-event injection, catalog và quality gates.
