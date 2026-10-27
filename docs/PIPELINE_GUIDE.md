@@ -42,7 +42,16 @@ python -m venv .venv
 .venv/bin/python -m pytest tests/ -q    # phải thấy: 56 passed
 ```
 
-**Dữ liệu đầu vào:** 7 file CSV gốc của OULAD (không sửa tên/không sửa nội dung), ví dụ đặt tại `data/oulad/archive/`. Tất cả lệnh dưới đây chạy với **cwd = `ml-data/`**.
+**Dữ liệu đầu vào — giải nén zip (chạy 1 lần duy nhất):**
+
+```bash
+# cwd = ml-data/ — giải nén 7 CSV của OULAD vào data/oulad/archive/
+unzip data/archive.zip -d data/oulad/archive
+```
+
+Sau khi giải nén xong, `data/oulad/archive/` phải chứa đủ 7 file: `assessments.csv`, `courses.csv`, `studentAssessment.csv`, `studentInfo.csv`, `studentRegistration.csv`, `studentVle.csv`, `vle.csv` (zip ~43MB → giải nén ~464MB). Nếu ai đó đã giải nén sẵn thì **bỏ qua bước này** — không sửa tên/không sửa nội dung CSV.
+
+Tất cả lệnh dưới đây chạy với **cwd = `ml-data/`**.
 
 ---
 
@@ -108,7 +117,7 @@ print('GATES:', gate.status, '| errors:', gate.errors or 'không')
 
 ---
 
-## 4. Quickstart — toàn bộ pipeline trong 1 lệnh
+## 4. Quickstart — chạy 1 lệnh, có ngay bộ train/validation/holdout
 
 ```bash
 .venv/bin/python -c "
@@ -117,6 +126,7 @@ from learnguard.data.ingestion import ingest_oulad
 from learnguard.data.features import build_feature_snapshot
 from learnguard.data.leakage import LeakageAuditor
 from learnguard.data.quality import validate_snapshot
+from learnguard.data.loading import load_snapshot_splits
 
 ing = ingest_oulad(Path('data/oulad/archive'), Path('artifacts/ingestion_m1_verify'))
 snap = build_feature_snapshot(Path('artifacts/ingestion_m1_verify'),
@@ -126,8 +136,42 @@ gate = validate_snapshot(snap.snapshot_path)
 assert ing.status == 'ok' and audit.status == 'ok' and gate.status == 'ok', \
     f'pipeline FAILED: {ing.status} / {audit.status} / {gate.status}'
 print('PIPELINE OK —', snap.snapshot_version)
+
+splits = load_snapshot_splits('artifacts/feature_snapshot_m2/snapshot.parquet')
+print('version :', splits.snapshot_version)
+print('train      :', f'{len(splits.train):>6,} dòng (2013B+2013J)')
+print('validation :', f'{len(splits.validation):>6,} dòng (2014B)')
+print('holdout    :', f'{len(splits.holdout):>6,} dòng (2014J) — chạm 1 lần khi báo cáo')
 "
 ```
+
+Chạy xong lệnh này là ML owner có thể `import load_snapshot_splits` và train ngay — không cần thao tác gì thêm.
+
+### Sau khi pipeline chạy xong — cái gì ở đâu?
+
+| Thứ | Vị trí | Dạng |
+|---|---|---|
+| Dữ liệu thô (7 CSV) | `data/oulad/archive/` | CSV, chỉ đọc |
+| Canonical Parquet (M1) | `artifacts/ingestion_m1_verify/canonical/*.parquet` | 1 file/bảng |
+| Dòng bị cách ly | `artifacts/ingestion_m1_verify/quarantine/` | CSV + lý do |
+| Report ingestion | `artifacts/ingestion_m1_verify/ingestion_report.json` | JSON |
+| **Snapshot (M2)** | `artifacts/feature_snapshot_m2/snapshot.parquet` | Parquet ~27,535 dòng |
+| Ledger (giấy khai sinh) | `artifacts/feature_snapshot_m2/snapshot.ledger.json` | JSON |
+
+**Quan trọng — train/validation/holdout KHÔNG phải 3 file riêng.** Chúng là 3 phần của đúng 1 file `snapshot.parquet`, phân biệt bằng cột `split`. Cách lấy **duy nhất được cấp phép**:
+
+```python
+from learnguard.data.loading import load_snapshot_splits
+
+splits = load_snapshot_splits("artifacts/feature_snapshot_m2/snapshot.parquet")
+splits.train        # → model.fit()
+splits.validation   # → tuning threshold/hyperparameter
+splits.holdout      # → evaluate 1 LẦN khi báo cáo
+
+X_tr, y_tr = splits.x_y("train")   # (X, y) theo 15 cột feature cam kết
+```
+
+Không tạo file riêng, không lọc `split` thủ công, không copy snapshot đi nơi khác — mọi thao tác đều đi qua loader để giữ audit trail.
 
 ---
 
