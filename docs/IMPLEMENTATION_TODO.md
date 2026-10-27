@@ -8,9 +8,9 @@
 - [x] Implement ingestion, integrity checks, linting, quarantine và source hash. *(ingestion.py + 23 test pytest; verify OULAD thật: 0 quarantine, dedupe 787,170 exact-duplicate studentVle)*
 - [x] Hoàn thiện catalog với source, aggregation, as-of rule và feature kind. *(5 features; rule `n_clicks_before_cutoff` đã đồng bộ `date <= cutoff`)*
 - [x] Implement cohort và snapshot tới cutoff ngày 27, kèm as-of ledger/version. *(PointInTimeFeatureBuilder: cohort loại rút-lui-trước-cutoff; 5 features đúng as-of rule; ledger ghi source hash + version; 13 test — verify thật: 27,535 dòng, 0 leakage khi inject future-event)*
-- [ ] Implement leakage audit cho VLE và assessments.
-- [ ] Implement quality gate cho schema, missingness, volume và PSI.
-- [ ] Thêm kiểm thử cutoff, future-event injection, catalog và quality gates.
+- [x] Implement leakage audit cho VLE và assessments. *(LeakageAuditor 3 lớp: catalog rules + recompute đối chiếu + 4 injection probes×4 SV; verify thật: 0 violation)*
+- [x] Implement quality gate cho schema, missingness, volume và PSI. *(DataQualityGate 4 gates; PSI yêu cầu ≥200 mẫu/bên — chặn false alarm do nhiễu; verify thật: ok)*
+- [x] Thêm kiểm thử cutoff, future-event injection, catalog và quality gates. *(53/53 test; test bắt được leaky-builder cấy chủ đích qua injection probe)*
 
 ## M4–M5 · ML pipeline
 
