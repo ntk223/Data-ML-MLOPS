@@ -1,7 +1,7 @@
 # Báo cáo M3 — Leakage Audit & Quality Gates
 
 **Dự án:** LearnGuard ML/Data · **Giai đoạn:** M3 · **Ngày hoàn thành:** 2026-10-27
-**Trạng thái:** ✅ HOÀN THÀNH · Suite M1–M3 có 97 test; full suite sau Phase 5 có 163 test pass · Verify dữ liệu thật: audit `ok` 0 violation; run có baseline đạt 4/4 gates
+**Trạng thái:** ✅ HOÀN THÀNH · Suite M1–M3 có 97 test; full suite sau Phase 4 có 123 test pass · Verify dữ liệu thật: audit `ok` 0 violation; run có baseline đạt 4/4 gates
 
 ---
 
@@ -10,7 +10,7 @@
 M3 không tạo dữ liệu mới — nó là **cửa ải chặn**: chứng minh M1+M2 đã đúng, và **fail thì chặn pipeline** (không xuất batch, theo TODO Orchestration). Vai trò tương đương CI gate cho dữ liệu.
 
 ```
-M2 snapshot ──► [M3: LeakageAuditor + DataQualityGate] ──PASS──► Phase 4 preprocessing ──► Phase 5/M4 baseline
+M2 snapshot ──► [M3: LeakageAuditor + DataQualityGate] ──PASS──► M4 train/eval
                           │
                           └──FAIL──► chặn + báo cáo lỗi rõ ràng
 ```
@@ -72,7 +72,7 @@ QUALITY GATES:  status = ok · 27,535 dòng · 0 errors
 ## 6. Cách chạy lại
 
 ```bash
-.venv/bin/python -m pytest tests/ -q   # 163 passed
+.venv/bin/python -m pytest tests/ -q   # 86 passed
 .venv/bin/python -c "
 from learnguard.data.leakage import LeakageAuditor
 from learnguard.data.quality import validate_snapshot
@@ -84,8 +84,8 @@ print(audit.status, gate.status)
 
 ## 7. Việc tiếp theo — M4
 
-1. Phase 5: baseline Logistic Regression cố định trên train; candidate model để phase sau
+1. Baseline Logistic Regression + candidate model trên snapshot M2
 2. **Temporal split**: train 2013B+J → validation 2014B → holdout 2014J (không random split — tránh trùng SV giữa train/test)
 3. Metrics: Recall@top-k, AUC, ECE, fairness slices (gender/region/disability/age), false negatives
-4. Phase đánh giá sau mới tuning threshold CHỈ trên validation; Phase 5 không tuning
+4. Tuning threshold CHỈ trên validation; NaN `avg_score_submitted` xử lý tường minh
 5. Model card + registry metadata

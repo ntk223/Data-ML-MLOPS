@@ -1,8 +1,7 @@
-# OULAD Data, Preprocessing and Logistic Baseline Guide
+# OULAD Data and Preprocessing Pipeline Guide
 
-Phạm vi tài liệu là M1–M3 tại cutoff day 27, Phase 4 train-only preprocessing và
-Phase 5/M4 Logistic baseline. Model training vẫn là ML stage riêng, không được gộp
-vào data pipeline M1–M3.
+Phạm vi tài liệu là M1–M3 tại cutoff day 27 và Phase 4 train-only preprocessing.
+Huấn luyện/evaluate model M4–M5 không được chạy hoặc giả lập bởi pipeline này.
 
 ## 1. Luồng xử lý và cài đặt
 
@@ -96,8 +95,7 @@ cutoff_day=27, baseline_snapshot=None, run_id=None)`.
 ## 4. Hợp đồng snapshot-v3
 
 - Khóa: `code_module`, `code_presentation`, `id_student`.
-- Target model: `label`; `label=1` cho Fail/Withdrawn, ngược lại bằng 0.
-  `final_result` chỉ là audit field và không đi vào model matrix.
+- Target: `final_result`; `label=1` cho Fail/Withdrawn, ngược lại bằng 0.
 - Split: 2013B+2013J là train, 2014B là validation, 2014J là holdout.
 - Feature tĩnh: gender, region, education, IMD, age, previous attempts, credits,
   disability và module/presentation.
@@ -189,36 +187,7 @@ Nghiệm thu OULAD thật hai lần cho cùng kết quả:
 Hai run có cùng contract hash, train hash, learned-state hash, feature order và
 transformed semantic hash cho cả ba split.
 
-## 8. Phase 5 / M4 — Logistic Regression baseline
-
-Phase 4 preprocessing đã hoàn tất trước khi bắt đầu bước này. Training chỉ dùng fitted
-preprocessor đã xác minh và chỉ đọc temporal train; không refit preprocessing, không đọc
-validation/holdout, không tuning và không tính metric.
-
-```bash
-.venv/bin/learnguard ml train-logistic \
-  --data-run-dir artifacts/data-runs/<data-run-id> \
-  --preprocessing-artifact-dir artifacts/preprocessing-runs/<preprocessing-run-id> \
-  --artifacts-dir artifacts \
-  --run-id <model-run-id>
-
-.venv/bin/learnguard ml verify-model \
-  --model-artifact-dir artifacts/model-runs/<model-run-id> \
-  --data-run-dir artifacts/data-runs/<data-run-id> \
-  --preprocessing-artifact-dir artifacts/preprocessing-runs/<preprocessing-run-id>
-```
-
-Artifact được publish atomically dưới `artifacts/model-runs/<run-id>/`: `model.joblib`,
-`model.manifest.json`, `model.training-report.json`, `model.success.json`. Baseline v1 là
-L2 Logistic Regression, `C=1.0`, solver `lbfgs`, không class weighting, `max_iter=2000`,
-`tol=1e-4`, seed 42. CLI không cho override contract này.
-
-Training report chỉ chứa convergence và structural sanity checks. Precision/Recall,
-AUC, threshold, calibration, fairness, model comparison và holdout evaluation thuộc
-phase đánh giá sau. Joblib chỉ được load từ nguồn cục bộ đáng tin cậy; checksum không
-làm pickle từ nguồn không tin cậy trở nên an toàn.
-
-## 9. CI
+## 8. CI
 
 - `.github/workflows/test.yml`: fixture tests trên pull request và push vào main.
 - `.github/workflows/full-oulad.yml`: chạy manual hoặc hằng tuần, thực thi full dataset

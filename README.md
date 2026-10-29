@@ -11,7 +11,9 @@ Batch repository for LearnGuard. The OULAD data boundary (M1–M3) is implemente
 
 Phase 5 fits a fixed Logistic Regression baseline from the approved preprocessing
 artifact. Evaluation, threshold selection, scoring and prediction-batch export remain
-separate work in [`docs/IMPLEMENTATION_TODO.md`](docs/IMPLEMENTATION_TODO.md).
+separate work. See [`docs/M4_LOGISTIC_BASELINE.md`](docs/M4_LOGISTIC_BASELINE.md) for
+the model-only runbook and [`docs/IMPLEMENTATION_TODO.md`](docs/IMPLEMENTATION_TODO.md)
+for later phases.
 
 ## Quickstart
 
