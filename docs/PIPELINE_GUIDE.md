@@ -1,259 +1,226 @@
-# PIPELINE_GUIDE — Hướng dẫn vận hành pipeline dữ liệu LearnGuard
+# OULAD Data, Preprocessing and Logistic Baseline Guide
 
-**Dành cho:** ML engineer / bất kỳ ai cần chạy pipeline `ml-data` hoặc tiêu thụ feature snapshot.
-**Phạm vi:** M1 (ingestion) → M2 (feature snapshot) → M3 (leakage audit + quality gates). Phần M4/M5 do ML owner phát triển trên đầuContract được mô tả ở mục 5.
-**Người chịu trách nhiệm pipeline:** data engineer (người viết tài liệu này). Mọi thắc mắc về split/feature/quarantine → hỏi data engineer, **không tự sửa**.
+Phạm vi tài liệu là M1–M3 tại cutoff day 27, Phase 4 train-only preprocessing và
+Phase 5/M4 Logistic baseline. Model training vẫn là ML stage riêng, không được gộp
+vào data pipeline M1–M3.
 
----
+## 1. Luồng xử lý và cài đặt
 
-## 1. Bức tranh tổng thể
-
+```text
+archive.zip hoặc thư mục 7 CSV
+  → ingestion + quarantine + canonical Parquet
+  → snapshot-v3 point-in-time
+  → full recompute + future-event leakage probes
+  → schema/missingness/volume/PSI gates
 ```
-CSV OULAD (7 file, giữ nguyên)
-   │
-   ▼  M1 — ingest_oulad()          validate schema → quarantine dòng lỗi → dedupe
-   │                                → Parquet canonical + SHA-256 + ingestion_report.json
-   ▼  M2 — build_feature_snapshot() cohort point-in-time (cutoff ngày 27)
-   │                                → snapshot.parquet (có cột label + split) + ledger JSON
-   ▼  M3 — LeakageAuditor + DataQualityGate
-   │                                chứng minh snapshot sạch → PASS mới được dùng
-   ▼
-snapshot.parquet ──► M4 (ML owner): train / tune / eval theo cột `split`
-```
-
-**Triết lý cốt lõi:** pipeline chỉ **validate + quarantine + ghi vết**, KHÔNG bao giờ impute/dọn hộ. Dòng dữ liệu sai → vào `quarantine/`, không tự biến mất. Mọi con số đều truy vết được qua hash trong ledger.
-
----
-
-## 2. Cài đặt môi trường
 
 ```bash
-cd ml-data
-
-# Tạo venv (Python ≥ 3.11)
 python -m venv .venv
-.venv/bin/pip install -r requirements.txt        # runtime: pandas 3.1.0, pyarrow 26.0.0
-.venv/bin/pip install -r requirements-dev.txt    # nếu cần chạy test/notebook (pytest, jupyter...)
+.venv/bin/pip install -r requirements.txt pytest==9.1.1
+.venv/bin/pip install -e . --no-deps
+.venv/bin/pytest tests -q
 ```
 
-**Kiểm tra cài đặt:**
+`data/archive.zip` đã chứa trực tiếp bảy CSV. Pipeline đọc ZIP tại chỗ, hash nội dung
+từng CSV và không cần giải nén. Thư mục CSV vẫn được hỗ trợ để phát triển cục bộ.
+
+## 2. Chạy toàn bộ M1–M3
 
 ```bash
-.venv/bin/python -m pytest tests/ -q    # phải thấy: 56 passed
+.venv/bin/learnguard data run \
+  --source data/archive.zip \
+  --artifacts-dir artifacts \
+  --cutoff-day 27
 ```
 
-**Dữ liệu đầu vào — giải nén zip (chạy 1 lần duy nhất):**
+Mỗi run nằm riêng dưới `artifacts/data-runs/<run-id>/`:
+
+```text
+ingestion/
+  canonical/*.parquet
+  quarantine/*.csv
+  ingestion_report.json
+  ingestion.success.json
+snapshot/
+  snapshot.parquet
+  snapshot.ledger.json
+  snapshot.success.json
+reports/
+  leakage_audit.json
+  quality_report.json
+  pipeline_report.json
+```
+
+Pipeline fail-fast theo thứ tự `ingestion`, `feature_snapshot`, `leakage_audit`,
+`quality_gate`. Exit code 0 chỉ khi cả bốn stage đạt.
+
+`run-id` phải là một tên đơn gồm 1–128 ký tự ASCII: chữ, số, `.`, `_`, `-`, và
+ký tự đầu phải là chữ hoặc số. Absolute path, `..`, slash, backslash và khoảng trắng
+bị từ chối trước khi pipeline tạo thư mục. Quy tắc này áp dụng cho cả data run và
+preprocessing run.
+
+Để đo volume/PSI và kiểm tra tái lập, chạy lần hai với snapshot đã duyệt làm baseline:
 
 ```bash
-# cwd = ml-data/ — giải nén 7 CSV của OULAD vào data/oulad/archive/
-unzip data/archive.zip -d data/oulad/archive
+.venv/bin/learnguard data run \
+  --source data/archive.zip \
+  --artifacts-dir artifacts \
+  --baseline-snapshot artifacts/data-runs/<run-1>/snapshot/snapshot.parquet
 ```
 
-Sau khi giải nén xong, `data/oulad/archive/` phải chứa đủ 7 file: `assessments.csv`, `courses.csv`, `studentAssessment.csv`, `studentInfo.csv`, `studentRegistration.csv`, `studentVle.csv`, `vle.csv` (zip ~43MB → giải nén ~464MB). Nếu ai đó đã giải nén sẵn thì **bỏ qua bước này** — không sửa tên/không sửa nội dung CSV.
+Ở run đầu không có baseline, volume và PSI được ghi rõ là `not_applicable`; chúng không
+được báo pass giả. Run sau mới đánh giá hai gate này.
 
-Tất cả lệnh dưới đây chạy với **cwd = `ml-data/`**.
-
----
-
-## 3. Chạy pipeline — 3 bước
-
-### Bước 1 — M1: Ingestion (CSV → Parquet canonical)
+## 3. Chạy từng stage
 
 ```bash
-.venv/bin/python -c "
-from pathlib import Path
-from learnguard.data.ingestion import ingest_oulad
+.venv/bin/learnguard data ingest \
+  --source data/archive.zip --output-dir artifacts/manual/ingestion
 
-report = ingest_oulad(Path('data/oulad/archive'), Path('artifacts/ingestion_m1_verify'))
-print('status:', report.status)
-"
+.venv/bin/learnguard data snapshot \
+  --processed-dir artifacts/manual/ingestion \
+  --output artifacts/manual/snapshot/snapshot.parquet
+
+.venv/bin/learnguard data audit \
+  --snapshot artifacts/manual/snapshot/snapshot.parquet \
+  --processed-dir artifacts/manual/ingestion
+
+.venv/bin/learnguard data validate \
+  --snapshot artifacts/manual/snapshot/snapshot.parquet \
+  --baseline-snapshot artifacts/data-runs/<approved>/snapshot/snapshot.parquet
 ```
 
-Kết quả trong `artifacts/ingestion_m1_verify/`:
-- `canonical/*.parquet` — dữ liệu đã qua kiểm định (đầu vào DUY NHẤT hợp lệ của M2)
-- `quarantine/` — dòng vi phạm schema (kèm lý do), không rơi vào canonical
-- `ingestion_report.json` — số liệu từng bảng, số dòng quarantine
+Python entry point tương đương là `run_data_pipeline(source, artifacts_dir,
+cutoff_day=27, baseline_snapshot=None, run_id=None)`.
 
-**Đọc report thế nào:** `status = ok` và `quarantined_rows = 0` là sạch. Quarantine > 0 KHÔNG phải lỗi — đó là thiết kế (dòng xấu bị cách ly thay vì âm thầm trôi vào model). Xem lý do trong `quarantine/`, quyết định xử lý thuộc về data engineer.
+## 4. Hợp đồng snapshot-v3
 
-### Bước 2 — M2: Feature snapshot (cutoff ngày 27)
+- Khóa: `code_module`, `code_presentation`, `id_student`.
+- Target model: `label`; `label=1` cho Fail/Withdrawn, ngược lại bằng 0.
+  `final_result` chỉ là audit field và không đi vào model matrix.
+- Split: 2013B+2013J là train, 2014B là validation, 2014J là holdout.
+- Feature tĩnh: gender, region, education, IMD, age, previous attempts, credits,
+  disability và module/presentation.
+- Feature hành vi chỉ dùng dữ liệu `date <= 27`; Exam không có ngày bị loại.
+- `active_days_before_cutoff` đếm số ngày VLE khác nhau tới ngày 27, gồm cả ngày âm
+  vì hoạt động xem tài liệu trước khai giảng là tín hiệu hợp lệ.
+- `imd_band` và `avg_score_submitted` là hai cột duy nhất được phép null.
+- `insufficient_data` là cờ, không phải lý do âm thầm loại sinh viên.
+
+Ingestion report chứa semantic content hash cho từng canonical table. Ledger chứa source
+hashes, full contract hash, cutoff, row count và snapshot semantic content hash.
+`load_snapshot_splits()` từ chối ledger legacy, snapshot bị sửa, split sai hoặc
+contract không khớp. Version hiện đã kiểm chứng:
+`snapshot-v3:cutoff27:f917f578:f3ee9894`.
+
+## 5. Leakage và quality gates
+
+Leakage audit kiểm catalog, ledger, tái tạo toàn bộ snapshot (gồm cohort, static fields,
+flags, label, split) và 16 future-event probes. Bất kỳ violation nào đều chặn pipeline.
+
+Quality gate kiểm exact schema, dtype/domain, PK, label/result consistency, split,
+derived flags, missingness, volume và PSI. Baseline phải là snapshot đã duyệt; không dùng
+snapshot hiện tại làm baseline cho chính nó trong production.
+
+## 6. Kết quả nghiệm thu OULAD thật (2026-10-29)
+
+Hai run độc lập từ ZIP đã hoàn thành:
+
+| Chỉ số | Kết quả |
+|---|---:|
+| Canonical studentVle | 9,868,110 |
+| Exact duplicates loại minh bạch | 787,170 |
+| Quarantine | 0 |
+| Snapshot rows | 27,535 |
+| Insufficient-data rows | 796 |
+| Leakage probes / violations | 16 / 0 |
+| Run-2 volume ratio | 1.0 |
+| Run-2 PSI | 0.0 cho 14 feature |
+| Semantic content hash | `d941abb1412566109da3c78be3846b61adf49ecbbbb7e9201f4afc10ea71c0d5` |
+
+Hai run có cùng snapshot version, row count và semantic hash; timestamp và run ID được
+phép khác.
+
+## 7. Phase 4 — train-only preprocessing
+
+Phase 4 chỉ nhận một data-run M1–M3 đã thành công. Khi build, stage xác minh lại
+snapshot/ledger, report, leakage audit và quality gate trước khi fit.
 
 ```bash
-.venv/bin/python -c "
-from pathlib import Path
-from learnguard.data.features import build_feature_snapshot
+.venv/bin/learnguard ml preprocess \
+  --data-run-dir artifacts/data-runs/<data-run-id> \
+  --artifacts-dir artifacts \
+  --run-id <preprocessing-run-id>
 
-r = build_feature_snapshot(
-    Path('artifacts/ingestion_m1_verify'),
-    Path('artifacts/feature_snapshot_m2/snapshot.parquet'),
-)
-print('snapshot_version:', r.snapshot_version)
-"
+.venv/bin/learnguard ml verify-preprocessor \
+  --artifact-dir artifacts/preprocessing-runs/<preprocessing-run-id> \
+  --data-run-dir artifacts/data-runs/<data-run-id>
 ```
 
-Kết quả trong `artifacts/feature_snapshot_m2/`:
-- `snapshot.parquet` — ~27,535 dòng × 21 cột (schema đầy đủ ở mục 5.1)
-- `snapshot.ledger.json` — giấy khai sinh của snapshot: `cutoff_day`, `source_hash`, `feature_rules`, `cohort_rules`, `split_rules`, `input_hashes`, `feature_list_hash`, `snapshot_version`
+Preprocessor được fit duy nhất trên train. Validation và holdout chỉ gọi transform.
+`code_module` là categorical feature; `module_presentation`, entity keys,
+`final_result`, `label` và `split` không đi vào ma trận model. Pipeline dùng one-hot
+cho nominal, business ordering cho education/age/IMD, train median cho score thiếu,
+`log1p` cho clicks và StandardScaler fit trên train.
 
-**Tại sao cutoff = ngày 27?** Snapshot mô phỏng thời điểm cố vấn can thiệp sớm trong kỳ (tuần ~4/8 kịch bản spec): mọi feature chỉ được tính từ sự kiện xảy ra **trước hoặc bằng** ngày 27. Đổi `cutoff_day` là đổi hợp đồng feature → phải qua data engineer (xem mục 7).
+Artifact được publish atomically dưới `artifacts/preprocessing-runs/<run-id>/`:
 
-### Bước 3 — M3: Leakage audit + Quality gates (bắt buộc trước khi dùng)
+```text
+preprocessor.joblib
+preprocessor.manifest.json
+preprocessor.verification.json
+preprocessor.success.json
+```
+
+Manifest ràng buộc snapshot-v3, preprocessing contract, train semantic hash, learned
+state, output feature order, dependency versions và checksums. Không materialize các
+ma trận transformed. Joblib chỉ được load từ nguồn cục bộ đáng tin cậy.
+
+Nghiệm thu OULAD thật hai lần cho cùng kết quả:
+
+| Chỉ số | Kết quả |
+|---|---:|
+| Preprocessor version | `preprocessor-v1:af8c78d7:43a459f7:84a02baf` |
+| Train / validation / holdout | 11,811 / 6,510 / 9,214 |
+| Output features | 36 |
+| NaN / Inf sau transform | 0 / 0 |
+| Train median cho `avg_score_submitted` | 76.0 |
+
+Hai run có cùng contract hash, train hash, learned-state hash, feature order và
+transformed semantic hash cho cả ba split.
+
+## 8. Phase 5 / M4 — Logistic Regression baseline
+
+Phase 4 preprocessing đã hoàn tất trước khi bắt đầu bước này. Training chỉ dùng fitted
+preprocessor đã xác minh và chỉ đọc temporal train; không refit preprocessing, không đọc
+validation/holdout, không tuning và không tính metric.
 
 ```bash
-.venv/bin/python -c "
-from pathlib import Path
-from learnguard.data.leakage import LeakageAuditor
-from learnguard.data.quality import validate_snapshot
+.venv/bin/learnguard ml train-logistic \
+  --data-run-dir artifacts/data-runs/<data-run-id> \
+  --preprocessing-artifact-dir artifacts/preprocessing-runs/<preprocessing-run-id> \
+  --artifacts-dir artifacts \
+  --run-id <model-run-id>
 
-snap = Path('artifacts/feature_snapshot_m2/snapshot.parquet')
-audit = LeakageAuditor().audit_snapshot(snap, Path('artifacts/ingestion_m1_verify'), cutoff_day=27)
-gate  = validate_snapshot(snap)
-print('AUDIT:', audit.status, '| violations:', len(audit.violations))
-print('GATES:', gate.status, '| errors:', gate.errors or 'không')
-"
+.venv/bin/learnguard ml verify-model \
+  --model-artifact-dir artifacts/model-runs/<model-run-id> \
+  --data-run-dir artifacts/data-runs/<data-run-id> \
+  --preprocessing-artifact-dir artifacts/preprocessing-runs/<preprocessing-run-id>
 ```
 
-**Điều kiện sử dụng snapshot:** cả hai đều `ok`. Bất kỳ violation/error nào → **KHÔNG train model**, báo data engineer. Audit gồm 3 lớp (ledger hash, recompute từng dòng, 16 injection probes cắm sự kiện tương lai) — snapshot không qua audit thì chưa chứng minh không leakage.
+Artifact được publish atomically dưới `artifacts/model-runs/<run-id>/`: `model.joblib`,
+`model.manifest.json`, `model.training-report.json`, `model.success.json`. Baseline v1 là
+L2 Logistic Regression, `C=1.0`, solver `lbfgs`, không class weighting, `max_iter=2000`,
+`tol=1e-4`, seed 42. CLI không cho override contract này.
 
----
+Training report chỉ chứa convergence và structural sanity checks. Precision/Recall,
+AUC, threshold, calibration, fairness, model comparison và holdout evaluation thuộc
+phase đánh giá sau. Joblib chỉ được load từ nguồn cục bộ đáng tin cậy; checksum không
+làm pickle từ nguồn không tin cậy trở nên an toàn.
 
-## 4. Quickstart — chạy 1 lệnh, có ngay bộ train/validation/holdout
+## 9. CI
 
-```bash
-.venv/bin/python -c "
-from pathlib import Path
-from learnguard.data.ingestion import ingest_oulad
-from learnguard.data.features import build_feature_snapshot
-from learnguard.data.leakage import LeakageAuditor
-from learnguard.data.quality import validate_snapshot
-from learnguard.data.loading import load_snapshot_splits
-
-ing = ingest_oulad(Path('data/oulad/archive'), Path('artifacts/ingestion_m1_verify'))
-snap = build_feature_snapshot(Path('artifacts/ingestion_m1_verify'),
-                              Path('artifacts/feature_snapshot_m2/snapshot.parquet'))
-audit = LeakageAuditor().audit_snapshot(snap.snapshot_path, Path('artifacts/ingestion_m1_verify'), 27)
-gate = validate_snapshot(snap.snapshot_path)
-assert ing.status == 'ok' and audit.status == 'ok' and gate.status == 'ok', \
-    f'pipeline FAILED: {ing.status} / {audit.status} / {gate.status}'
-print('PIPELINE OK —', snap.snapshot_version)
-
-splits = load_snapshot_splits('artifacts/feature_snapshot_m2/snapshot.parquet')
-print('version :', splits.snapshot_version)
-print('train      :', f'{len(splits.train):>6,} dòng (2013B+2013J)')
-print('validation :', f'{len(splits.validation):>6,} dòng (2014B)')
-print('holdout    :', f'{len(splits.holdout):>6,} dòng (2014J) — chạm 1 lần khi báo cáo')
-"
-```
-
-Chạy xong lệnh này là ML owner có thể `import load_snapshot_splits` và train ngay — không cần thao tác gì thêm.
-
-### Sau khi pipeline chạy xong — cái gì ở đâu?
-
-| Thứ | Vị trí | Dạng |
-|---|---|---|
-| Dữ liệu thô (7 CSV) | `data/oulad/archive/` | CSV, chỉ đọc |
-| Canonical Parquet (M1) | `artifacts/ingestion_m1_verify/canonical/*.parquet` | 1 file/bảng |
-| Dòng bị cách ly | `artifacts/ingestion_m1_verify/quarantine/` | CSV + lý do |
-| Report ingestion | `artifacts/ingestion_m1_verify/ingestion_report.json` | JSON |
-| **Snapshot (M2)** | `artifacts/feature_snapshot_m2/snapshot.parquet` | Parquet ~27,535 dòng |
-| Ledger (giấy khai sinh) | `artifacts/feature_snapshot_m2/snapshot.ledger.json` | JSON |
-
-**Quan trọng — train/validation/holdout KHÔNG phải 3 file riêng.** Chúng là 3 phần của đúng 1 file `snapshot.parquet`, phân biệt bằng cột `split`. Cách lấy **duy nhất được cấp phép**:
-
-```python
-from learnguard.data.loading import load_snapshot_splits
-
-splits = load_snapshot_splits("artifacts/feature_snapshot_m2/snapshot.parquet")
-splits.train        # → model.fit()
-splits.validation   # → tuning threshold/hyperparameter
-splits.holdout      # → evaluate 1 LẦN khi báo cáo
-
-X_tr, y_tr = splits.x_y("train")   # (X, y) theo 15 cột feature cam kết
-```
-
-Không tạo file riêng, không lọc `split` thủ công, không copy snapshot đi nơi khác — mọi thao tác đều đi qua loader để giữ audit trail.
-
----
-
-## 5. Hợp đồng tiêu thụ (ML owner đọc kỹ)
-
-### 5.1 Schema `snapshot.parquet`
-
-| Nhóm cột | Cột | Ghi chú |
-|---|---|---|
-| Khóa chính | `code_module`, `code_presentation`, `id_student` | PK composite — mỗi SV 1 dòng/1 kỳ |
-| Target | `final_result`, `label` | `label = 1` nếu Fail/Withdrawn (at-risk) |
-| **Split** | `split` | `train` / `validation` / `holdout` — gán theo kỳ học, KHÔNG random |
-| Static | `gender`, `region`, `highest_education`, `imd_band`, `age_band`, `num_of_prev_attempts`, `studied_credits`, `disability`, `module_presentation` | `imd_band` có thể null — null là nghiệp vụ (kèm cờ `imd_band_missing`) |
-| Behavioral (as-of ≤ 27) | `n_clicks_before_cutoff`, `click_trend_w3_w4`, `n_submitted_before_cutoff`, `avg_score_submitted` | `avg_score_submitted` null = SV chưa có điểm nào — **xử lý tường minh ở M4, không fillna mù** |
-| Cờ hệ thống | `insufficient_data` | SV ít tương tác — cân nhắc khi phân tích |
-
-### 5.2 Cách load đúng — DÙNG LOADER CHUẨN, không tự lọc tay
-
-```python
-from learnguard.data.loading import load_snapshot_splits, MODEL_FEATURE_COLUMNS
-
-splits = load_snapshot_splits("artifacts/feature_snapshot_m2/snapshot.parquet")
-
-print(splits.snapshot_version)          # bắt buộc ghi vào model card
-train, val, test = splits.train, splits.validation, splits.holdout
-# train 11,811 (2013B+2013J) · val 6,510 (2014B) · test 9,214 (2014J)
-
-# Lấy (X, y) theo đúng 15 cột feature được cam kết, đúng thứ tự:
-X_tr, y_tr = splits.x_y("train")
-X_val, y_val = splits.x_y("validation")
-```
-
-Loader tự kiểm tra: cột `split` tồn tại + đúng domain, cả 3 tập đều có dòng, ledger đi kèm — vi phạm nào fail lớn thay vì trả về dữ liệu lờ mờ. **Không `snap[snap["split"] == ...]` thủ công** — code lọc tay phân kỳ, không ai audit được.
-
-### 5.3 Ba luật vàng (vi phạm = mất giá trị khoa học của toàn pipeline)
-
-1. **Tune CHỈ trên `validation`** — chọn threshold, hyperparameter, model. Không bao giờ tune trên holdout.
-2. **`holdout` chạm đúng 1 LẦN** — chạy evaluate sau khi chốt config, lấy số báo cáo. Muốn thay đổi gì → sửa config → chu kỳ sau mới được chạm lại.
-3. **Không tạo file train/test riêng, không lọc tay** — luôn dùng `load_snapshot_splits()`. Copy tách file hoặc lọc thủ công = mất audit trail.
-
-### 5.4 Snapshot version & ledger
-
-`snapshot_version = snapshot-v1:cutoff{day}:{source_hash[:8]}:{feature_list_hash[:8]}`
-
-- `source_hash` đổi → **dữ liệu nguồn** đã thay đổi
-- `feature_list_hash` đổi → **hợp đồng rule** (feature hoặc split) đã thay đổi
-- Mỗi lần train nên **ghi `snapshot_version` vào model card/registry** — model phải gắn với đúng phiên bản snapshot đã train. Version hiện tại: `snapshot-v1:cutoff27:35de8103:39e10cfa`
-
----
-
-## 6. Sự cố thường gặp
-
-| Triệu chứng | Nghĩa là | Xử lý |
-|---|---|---|
-| `ingestion_report.json` có dòng quarantine | Dữ liệu vi phạm schema bị cách ly (thiết kế đúng) | Đọc lý do trong `quarantine/`; quyết định thuộc data engineer |
-| `ValueError: unknown_presentation_for_split` | Có kỳ học mới chưa có rule split | **Đúng hành vi**. Báo data engineer chốt rule trong `SPLIT_RULES` rồi rebuild |
-| Audit: `source_hash_mismatch` | Snapshot sinh từ dữ liệu nguồn khác hiện tại | Rebuild snapshot từ `canonical/` hiện tại |
-| Audit: `snapshot_recompute_mismatch` | Snapshot bị sửa tay hoặc lệch nguồn | **Không bao giờ sửa snapshot trực tiếp** — rebuild từ pipeline |
-| Gate: `missingness_exceeded` / `psi_exceeded` | Null quá 70% hoặc drift PSI > 0.2 so với baseline | PSI bỏ qua khi mẫu < 200/bên (thiết kế — tránh false alarm); còn lại báo data engineer |
-| Audit: `future_event_leak:*` | Feature "nhìn thấy tương lai" — lỗi builder | DỪNG. Báo data engineer — đây là lỗi nghiêm trọng nhất |
-
----
-
-## 7. Ranh giới trách nhiệm
-
-| Thuộc data engineer | Thuộc ML owner |
-|---|---|
-| Định nghĩa feature (`FEATURE_CATALOG`), cutoff_day, split rules | Chọn model, hyperparameter, threshold (trên validation) |
-| Chạy pipeline, xử lý quarantine, quyết định khi gates fail | Fairness slices, calibration, metrics Recall@top-k/AUC/ECE |
-| Mọi thay đổi hợp đồng (feature/split/cutoff) | Ghi `snapshot_version` + config vào model card/registry |
-| M3 gates + audit là ĐIỂM CHẶN — pass mới giao data | **Không sửa snapshot, không đi vòng gates** |
-
-Thay đổi bất kỳ hợp đồng nào (thêm feature, đổi split, đổi cutoff) → đề xuất với data engineer → sửa code + test + rebuild + audit lại → version mới. Không có nhánh "sửa nhanh tay".
-
----
-
-## 8. Tài liệu nền (đọc thêm khi cần)
-
-| Tài liệu | Nội dung |
-|---|---|
-| `docs/M1_REPORT.md` | 8 quyết định thiết kế EDA (null nghiệp vụ, dedupe studentVle...) |
-| `docs/M2_REPORT.md` | Cohort, 5 features, **phụ lục split + trade-off + phương án dự phòng** |
-| `docs/M3_REPORT.md` | 3 lớp leakage audit, 4 quality gates, MIN_PSI_SAMPLE=200 |
-| `docs/REPOSITORY_LAYOUT.md` | Ranh giới repo + spec `prediction-batch.v1` (M5 → backend) |
-| `docs/IMPLEMENTATION_TODO.md` | Checklist tiến độ M1–M5 |
+- `.github/workflows/test.yml`: fixture tests trên pull request và push vào main.
+- `.github/workflows/full-oulad.yml`: chạy manual hoặc hằng tuần, thực thi full dataset
+  hai lần, so version/hash, volume ratio, PSI và hai preprocessing semantic runs, sau đó
+  lưu report/manifest làm CI artifact.

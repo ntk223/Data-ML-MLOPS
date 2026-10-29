@@ -13,13 +13,16 @@ Mọi rule đều truy vết về EDA: notebooks/01_oulad_eda.ipynb.
 
 import hashlib
 import json
+import shutil
+import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import BinaryIO, Mapping
 
 import pandas as pd
 
 from learnguard.data.schema import OULAD_TABLE_SCHEMAS, TableSchema
+from learnguard.data.snapshot_contract import HASH_ALGORITHM
 
 _QUARANTINE_REASON_COL = "_quarantine_reason"
 
@@ -42,17 +45,25 @@ class IngestionReport:
     quarantined_row_counts: dict[str, int] = field(default_factory=dict)
     # Bản sao Y HỆT toàn cột (artifact) bị loại ở M1 — không ghi quarantine file
     # vì không mất thông tin; đếm minh bạch tại đây. (Verify trên OULAD thật:
-    # studentVle có 1,429,783 dòng exact-duplicate.)
+    # studentVle có 787,170 dòng exact-duplicate.)
     deduped_row_counts: dict[str, int] = field(default_factory=dict)
+    canonical_content_hashes: dict[str, str] = field(default_factory=dict)
+    hash_algorithm: str = HASH_ALGORITHM
+    canonical_published: bool = False
     quarantine: list[QuarantineRecord] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
     with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            digest.update(chunk)
+        return _sha256_stream(fh)
+
+
+def _sha256_stream(fh: BinaryIO) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: fh.read(1 << 20), b""):
+        digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -92,15 +103,18 @@ def _row_rule_violations(schema: TableSchema, df: pd.DataFrame) -> list[tuple[st
 
 # Quan hệ FK phải bảo toàn — 9 quan hệ đã xác minh 0 orphan trong EDA (section 5)
 FK_RULES: tuple[tuple[str, tuple[str, ...], str, tuple[str, ...]], ...] = (
+    ("studentInfo", ("code_module", "code_presentation"), "courses", ("code_module", "code_presentation")),
     ("assessments", ("code_module", "code_presentation"), "courses", ("code_module", "code_presentation")),
     ("vle", ("code_module", "code_presentation"), "courses", ("code_module", "code_presentation")),
     ("studentRegistration", ("code_module", "code_presentation"), "courses", ("code_module", "code_presentation")),
     ("studentVle", ("code_module", "code_presentation"), "courses", ("code_module", "code_presentation")),
-    ("studentRegistration", ("id_student",), "studentInfo", ("id_student",)),
-    ("studentAssessment", ("id_student",), "studentInfo", ("id_student",)),
-    ("studentVle", ("id_student",), "studentInfo", ("id_student",)),
+    ("studentRegistration", ("code_module", "code_presentation", "id_student"),
+     "studentInfo", ("code_module", "code_presentation", "id_student")),
+    ("studentVle", ("code_module", "code_presentation", "id_student"),
+     "studentInfo", ("code_module", "code_presentation", "id_student")),
     ("studentAssessment", ("id_assessment",), "assessments", ("id_assessment",)),
-    ("studentVle", ("id_site",), "vle", ("id_site",)),
+    ("studentVle", ("code_module", "code_presentation", "id_site"),
+     "vle", ("code_module", "code_presentation", "id_site")),
 )
 
 
@@ -108,25 +122,69 @@ class OuladIngestionService:
     """Coordinates raw table loading and canonical output creation."""
 
     def ingest(self, data_dir: Path, output_dir: Path) -> IngestionReport:
-        """Load seven tables, validate, quarantine, and write canonical outputs."""
+        """Load seven tables from a directory or ZIP, validate, and write outputs."""
         data_dir, output_dir = Path(data_dir), Path(output_dir)
+        if output_dir.exists() and any(output_dir.iterdir()):
+            raise FileExistsError(f"ingestion_output_not_empty:{output_dir}")
         canonical_dir = output_dir / "canonical"
+        staging_dir = output_dir / "canonical.staging"
         quarantine_dir = output_dir / "quarantine"
-        canonical_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
         quarantine_dir.mkdir(parents=True, exist_ok=True)
 
         report = IngestionReport(status="ok")
         tables: dict[str, pd.DataFrame] = {}
 
+        zip_file: zipfile.ZipFile | None = None
+        zip_members: dict[str, zipfile.ZipInfo] = {}
+        if data_dir.is_file() and data_dir.suffix.lower() == ".zip":
+            try:
+                zip_file = zipfile.ZipFile(data_dir)
+                csv_infos = [i for i in zip_file.infolist() if not i.is_dir() and i.filename.endswith(".csv")]
+                duplicates = sorted({i.filename for i in csv_infos if sum(j.filename == i.filename for j in csv_infos) > 1})
+                expected = {f"{name}.csv" for name in OULAD_TABLE_SCHEMAS}
+                actual = {i.filename for i in csv_infos}
+                missing, unexpected = sorted(expected - actual), sorted(actual - expected)
+                if missing or unexpected or duplicates:
+                    report.status = "failed"
+                    report.errors.append(
+                        "zip_members_invalid:"
+                        f"missing={','.join(missing) or '-'}:"
+                        f"unexpected={','.join(unexpected) or '-'}:"
+                        f"duplicates={','.join(duplicates) or '-'}"
+                    )
+                zip_members = {i.filename: i for i in csv_infos}
+            except zipfile.BadZipFile:
+                report.status = "failed"
+                report.errors.append("invalid_zip_archive")
+        elif not data_dir.is_dir():
+            report.status = "failed"
+            report.errors.append(f"source_not_found:{data_dir}")
+
         # --- Pha 1: nạp + kiểm contract từng bảng ---------------------------
         for name, schema in OULAD_TABLE_SCHEMAS.items():
-            src = data_dir / f"{name}.csv"
-            if not src.is_file():
+            filename = f"{name}.csv"
+            try:
+                if zip_file is not None:
+                    if filename not in zip_members:
+                        continue
+                    with zip_file.open(zip_members[filename]) as fh:
+                        report.source_hashes[name] = _sha256_stream(fh)
+                    with zip_file.open(zip_members[filename]) as fh:
+                        df = pd.read_csv(fh)
+                else:
+                    src = data_dir / filename
+                    if not src.is_file():
+                        report.status = "failed"
+                        report.errors.append(f"missing_source_file:{name}")
+                        continue
+                    report.source_hashes[name] = _sha256_file(src)
+                    df = pd.read_csv(src)
+            except (OSError, RuntimeError, UnicodeDecodeError, pd.errors.ParserError,
+                    zipfile.BadZipFile) as exc:
                 report.status = "failed"
-                report.errors.append(f"missing_source_file:{name}")
+                report.errors.append(f"source_read_error:{name}:{type(exc).__name__}")
                 continue
-            report.source_hashes[name] = _sha256_file(src)
-            df = pd.read_csv(src)
             report.raw_row_counts[name] = len(df)
 
             missing = [c for c in schema.required_columns if c not in df.columns]
@@ -151,7 +209,7 @@ class OuladIngestionService:
                 continue
 
             clean, quarantined, msgs = self.validate_table(name, df)
-            report.errors.extend(msgs)
+            report.warnings.extend(msgs)
             report.quarantined_row_counts[name] = len(quarantined)
 
             # Exact-duplicate (y hệt toàn cột) là artifact xuất trùng — loại ở M1,
@@ -162,7 +220,7 @@ class OuladIngestionService:
                 if exact_dup.any():
                     n = int(exact_dup.sum())
                     report.deduped_row_counts[name] = n
-                    report.errors.append(f"exact_duplicate_rows:{name}:{n}")
+                    report.warnings.append(f"exact_duplicate_rows:{name}:{n}")
                     clean = clean[~exact_dup]
 
             tables[name] = clean  # chỉ bảng HỢP LỆ mới tham gia pipeline + output
@@ -174,33 +232,55 @@ class OuladIngestionService:
                 )
             tables[name] = clean
 
+        if zip_file is not None:
+            zip_file.close()
+
         # --- Pha 2: referential integrity trên toàn bộ bảng -----------------
-        orphan_reasons = self._orphan_masks(tables)
-        for child, (reason, mask) in orphan_reasons.items():
-            if not mask.any():
+        orphan_rules = self._orphan_masks(tables)
+        for child, rules in orphan_rules.items():
+            combined = pd.Series(False, index=tables[child].index)
+            reasons = pd.Series("", index=tables[child].index, dtype="object")
+            for reason, mask in rules:
+                combined |= mask
+                reasons.loc[mask] = reasons.loc[mask].map(
+                    lambda current: f"{current};{reason}" if current else reason
+                )
+            if not combined.any():
                 continue
-            orphans = tables[child][mask].copy()
-            orphans[_QUARANTINE_REASON_COL] = reason
+            orphans = tables[child][combined].copy()
+            orphans[_QUARANTINE_REASON_COL] = reasons.loc[combined]
             qpath = quarantine_dir / f"{child}__orphan.csv"
             orphans.to_csv(qpath, index=False)
             prev = report.quarantined_row_counts.get(child, 0)
-            report.quarantined_row_counts[child] = prev + int(mask.sum())
+            report.quarantined_row_counts[child] = prev + int(combined.sum())
+            record_reason = ";".join(reason for reason, mask in rules if mask.any())
             report.quarantine.append(
-                QuarantineRecord(child, reason, int(mask.sum()), qpath)
+                QuarantineRecord(child, record_reason, int(combined.sum()), qpath)
             )
-            tables[child] = tables[child][~mask]
+            report.warnings.append(f"orphan_rows:{child}:{int(combined.sum())}")
+            tables[child] = tables[child][~combined]
 
         # --- Pha 3: ghi Parquet + report ------------------------------------
-        for name, df in tables.items():
-            out = canonical_dir / f"{name}.parquet"
-            df.to_parquet(out, index=False)
-            report.row_counts[name] = len(df)
+        if report.status == "ok":
+            staging_dir.mkdir(parents=True, exist_ok=False)
+            for name, df in tables.items():
+                out = staging_dir / f"{name}.parquet"
+                df.to_parquet(out, index=False)
+                report.row_counts[name] = len(df)
+                report.canonical_content_hashes[name] = _dataframe_content_hash(df)
+            staging_dir.rename(canonical_dir)
+            report.canonical_published = True
+            (output_dir / "ingestion.success.json").write_text(json.dumps({
+                "status": "ok",
+                "hash_algorithm": HASH_ALGORITHM,
+                "canonical_content_hashes": report.canonical_content_hashes,
+            }, indent=2))
+        elif staging_dir.exists():
+            shutil.rmtree(staging_dir)
 
         report_path = output_dir / "ingestion_report.json"
         report_path.write_text(json.dumps(asdict(report), indent=2, default=str))
 
-        if any(e.startswith(("missing_source_file", "missing_columns", "unexpected_columns", "dtype_mismatch")) for e in report.errors):
-            report.status = "failed"
         return report
 
     def validate_table(
@@ -256,27 +336,47 @@ class OuladIngestionService:
     ) -> list[QuarantineRecord]:
         """Kiểm 9 quan hệ FK; trả về record tổng hợp cho mỗi quan hệ có orphan."""
         records: list[QuarantineRecord] = []
-        for child, (reason, mask) in self._orphan_masks(tables).items():
-            if mask.any():
-                records.append(QuarantineRecord(child, reason, int(mask.sum())))
+        for child, rules in self._orphan_masks(tables).items():
+            for reason, mask in rules:
+                if mask.any():
+                    records.append(QuarantineRecord(child, reason, int(mask.sum())))
         return records
 
     # ---- nội bộ -----------------------------------------------------------
 
     def _orphan_masks(
         self, tables: Mapping[str, pd.DataFrame]
-    ) -> dict[str, tuple[str, pd.Series]]:
-        result: dict[str, tuple[str, pd.Series]] = {}
+    ) -> dict[str, list[tuple[str, pd.Series]]]:
+        result: dict[str, list[tuple[str, pd.Series]]] = {}
         for child, child_keys, parent, parent_keys in FK_RULES:
             if child not in tables or parent not in tables:
                 continue
             mask = self._orphan_mask(tables[child], child_keys, tables[parent], parent_keys)
             reason = f"orphan_fk:{child}->{parent}"
-            if child in result:
-                prev_reason, prev_mask = result[child]
-                result[child] = (f"{prev_reason};{reason}", prev_mask | mask)
-            else:
-                result[child] = (reason, mask)
+            result.setdefault(child, []).append((reason, mask))
+
+        # studentAssessment không chứa module/presentation. Suy ra offering qua
+        # assessment rồi kiểm enrollment composite trong studentInfo; kiểm chỉ
+        # theo id_student sẽ bỏ lọt SV thuộc một offering khác.
+        needed = {"studentAssessment", "assessments", "studentInfo"}
+        if needed <= set(tables):
+            sa = tables["studentAssessment"]
+            asm = tables["assessments"]
+            info = tables["studentInfo"]
+            enriched = sa.reset_index(names="_source_index").merge(
+                asm[["id_assessment", "code_module", "code_presentation"]],
+                on="id_assessment", how="left",
+            )
+            enrollment = info[["code_module", "code_presentation", "id_student"]].drop_duplicates()
+            checked = enriched.merge(
+                enrollment,
+                on=["code_module", "code_presentation", "id_student"],
+                how="left", indicator=True,
+            )
+            mask = checked["_merge"].eq("left_only")
+            mask = pd.Series(mask.to_numpy(), index=sa.index)
+            reason = "orphan_fk:studentAssessment->studentInfo_offering"
+            result.setdefault("studentAssessment", []).append((reason, mask))
         return result
 
     @staticmethod
@@ -301,3 +401,13 @@ class OuladIngestionService:
 def ingest_oulad(data_dir: Path, output_dir: Path) -> IngestionReport:
     """M1 pipeline entry point."""
     return OuladIngestionService().ingest(data_dir, output_dir)
+
+
+def _dataframe_content_hash(frame: pd.DataFrame) -> str:
+    """Semantic hash for reproducibility, independent from Parquet metadata."""
+    schema = "\n".join(f"{col}:{frame[col].dtype}" for col in frame.columns)
+    values = pd.util.hash_pandas_object(frame.reset_index(drop=True), index=False,
+                                        categorize=True).to_numpy()
+    digest = hashlib.sha256(schema.encode())
+    digest.update(values.tobytes())
+    return digest.hexdigest()

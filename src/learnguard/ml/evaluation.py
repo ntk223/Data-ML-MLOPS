@@ -1,9 +1,18 @@
-"""Evaluation report contracts; scoring logic is TODO."""
+"""Future evaluation report contracts; scoring logic is outside Phase 5."""
 
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from learnguard.ml.training import EvaluationMetrics
+
+@dataclass
+class EvaluationMetrics:
+    sample_count: int
+    roc_auc: float | None = None
+    pr_auc: float | None = None
+    recall_at_top_k: float | None = None
+    expected_calibration_error: float | None = None
+    fnr_gap: float | None = None
+    by_slice: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass

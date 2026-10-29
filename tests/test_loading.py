@@ -35,6 +35,17 @@ def _tables_all_presentations() -> dict[str, pd.DataFrame]:
         "id_student": sids, "date_registration": [-5.0] * 6,
         "date_unregistration": [float("nan")] * 6,
     })], ignore_index=True)
+    assessment_ids = [1011, 1012, 1013]
+    tables["assessments"] = pd.concat([tables["assessments"], pd.DataFrame({
+        "id_assessment": assessment_ids, "code_module": ["AAA"] * 3,
+        "code_presentation": pres, "assessment_type": ["TMA"] * 3,
+        "date": [20.0] * 3, "weight": [50.0] * 3,
+    })], ignore_index=True)
+    tables["studentAssessment"] = pd.concat([tables["studentAssessment"], pd.DataFrame({
+        "id_assessment": sum(([value] * 2 for value in assessment_ids), []),
+        "id_student": sids, "date_submitted": [15] * 6,
+        "is_banked": [0] * 6, "score": [70.0, 80.0] * 3,
+    })], ignore_index=True)
     return tables
 
 
@@ -87,13 +98,53 @@ def test_missing_ledger_fails_loudly(snapshot):
         load_snapshot_splits(bare)
 
 
-def test_out_of_domain_split_fails_loudly(tmp_path):
-    df = pd.DataFrame({
-        "code_module": ["AAA"], "code_presentation": ["2013B"], "id_student": [1],
-        "label": [1], "split": ["demo"],
-    })
+def test_tampered_snapshot_content_is_rejected(snapshot):
+    tmp, result = snapshot
+    path = tmp / "tampered-content.parquet"
+    frame = pd.read_parquet(result.snapshot_path)
+    frame.loc[0, "n_clicks_before_cutoff"] += 1
+    frame.to_parquet(path, index=False)
+    (tmp / "tampered-content.ledger.json").write_text(result.ledger_path.read_text())
+    (tmp / "tampered-content.success.json").write_text(
+        (tmp / "snapshot.success.json").read_text()
+    )
+    with pytest.raises(ValueError, match="content_hash_mismatch"):
+        load_snapshot_splits(path)
+
+
+def test_legacy_ledger_is_rejected_with_rebuild_message(snapshot):
+    tmp, result = snapshot
+    path = tmp / "legacy.parquet"
+    pd.read_parquet(result.snapshot_path).to_parquet(path, index=False)
+    (tmp / "legacy.ledger.json").write_text(json.dumps({"snapshot_version": "snapshot-v1:x"}))
+    (tmp / "legacy.success.json").write_text("{}")
+    with pytest.raises(ValueError, match="unsupported_snapshot_schema"):
+        load_snapshot_splits(path)
+
+
+def test_tampered_ledger_rules_are_rejected(snapshot):
+    tmp, result = snapshot
+    path = tmp / "tampered-ledger.parquet"
+    pd.read_parquet(result.snapshot_path).to_parquet(path, index=False)
+    ledger = json.loads(result.ledger_path.read_text())
+    ledger["split_rules"]["2014J"] = "validation"
+    (tmp / "tampered-ledger.ledger.json").write_text(json.dumps(ledger))
+    (tmp / "tampered-ledger.success.json").write_text(
+        (tmp / "snapshot.success.json").read_text()
+    )
+    with pytest.raises(ValueError, match="ledger_metadata_invalid"):
+        load_snapshot_splits(path)
+
+
+def test_out_of_domain_split_fails_loudly(snapshot):
+    tmp_path, result = snapshot
+    df = pd.read_parquet(result.snapshot_path)
+    df.loc[0, "split"] = "demo"
     path = tmp_path / "bad.parquet"
     df.to_parquet(path, index=False)
-    (tmp_path / "bad.ledger.json").write_text(json.dumps({"snapshot_version": "x"}))
+    (tmp_path / "bad.ledger.json").write_text(result.ledger_path.read_text())
+    (tmp_path / "bad.success.json").write_text(
+        (tmp_path / "snapshot.success.json").read_text()
+    )
     with pytest.raises(ValueError, match="split_out_of_domain"):
         load_snapshot_splits(path)

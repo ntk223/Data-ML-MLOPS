@@ -4,13 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "learnguard"
-version = "0.1.0"
-description = "LearnGuard module scaffold"
-requires-python = ">=3.10"
+version = "0.5.0"
+description = "LearnGuard OULAD point-in-time data and Logistic baseline pipeline"
+requires-python = ">=3.11"
 
 dependencies = [
     "pandas>=3.1",
     "pyarrow>=23.0",
+    "scikit-learn>=1.7,<1.8",
+    "joblib>=1.5,<1.6",
+    "scipy>=1.17,<1.18",
+    "threadpoolctl>=3.7,<3.8",
 ]
 
 [project.optional-dependencies]

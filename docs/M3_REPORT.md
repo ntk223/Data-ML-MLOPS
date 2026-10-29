@@ -1,7 +1,7 @@
 # Báo cáo M3 — Leakage Audit & Quality Gates
 
 **Dự án:** LearnGuard ML/Data · **Giai đoạn:** M3 · **Ngày hoàn thành:** 2026-10-27
-**Trạng thái:** ✅ HOÀN THÀNH · Tests 53/53 pass (17 test M3) · Verify dữ liệu thật: audit `ok` 0 violation, 4/4 gates pass
+**Trạng thái:** ✅ HOÀN THÀNH · Suite M1–M3 có 97 test; full suite sau Phase 5 có 163 test pass · Verify dữ liệu thật: audit `ok` 0 violation; run có baseline đạt 4/4 gates
 
 ---
 
@@ -10,7 +10,7 @@
 M3 không tạo dữ liệu mới — nó là **cửa ải chặn**: chứng minh M1+M2 đã đúng, và **fail thì chặn pipeline** (không xuất batch, theo TODO Orchestration). Vai trò tương đương CI gate cho dữ liệu.
 
 ```
-M2 snapshot ──► [M3: LeakageAuditor + DataQualityGate] ──PASS──► M4 train/eval
+M2 snapshot ──► [M3: LeakageAuditor + DataQualityGate] ──PASS──► Phase 4 preprocessing ──► Phase 5/M4 baseline
                           │
                           └──FAIL──► chặn + báo cáo lỗi rõ ràng
 ```
@@ -20,7 +20,7 @@ M2 snapshot ──► [M3: LeakageAuditor + DataQualityGate] ──PASS──►
 | Lớp | Cơ chế | Bắt loại lỗi nào |
 |---|---|---|
 | **0 · Ledger check** | `source_hash` trong ledger phải khớp hash Parquet nguồn hiện tại | Snapshot sinh từ dữ liệu khác processed_dir |
-| **1 · Recompute** | Tính lại 5 features từ nguồn, đối chiếu từng dòng với snapshot trên đĩa | Snapshot bị sửa tay, lệch nguồn, thiếu cột |
+| **1 · Recompute** | Tính lại toàn bộ snapshot 22 cột từ nguồn | Snapshot/cohort/label/split bị sửa tay hoặc lệch nguồn |
 | **2 · Injection probes** | Cắm 4 loại sự kiện "tương lai/mô hồ" × 4 SV → tính lại → **phải bất biến** | Bất kỳ kênh nào cho tương lai lọt vào feature |
 
 ### 4 loại injection probes (thiết kế bám 2 nguồn rủi ro lớn nhất của OULAD)
@@ -38,7 +38,7 @@ Ngoài ra `audit_catalog` từ chối: as-of rule lạ, tham chiếu target/iden
 
 | Gate | Kiểm tra | Ngưỡng mặc định |
 |---|---|---|
-| **Schema** | Đủ 20 cột expected, `label ∈ {0,1}`, PK composite unique | — |
+| **Schema** | Exact 22 cột, dtype/domain, label/result, derived flags, PK composite | — |
 | **Missingness** | Null fraction từng cột | ≤ 0.70 |
 | **Volume** | Tỷ lệ dòng so với snapshot baseline | 0.10 – 10.0 |
 | **PSI (drift)** | Trôi phân bố 6 numeric + 7 categorical vs baseline | ≤ 0.20 |
@@ -48,8 +48,8 @@ Ngoài ra `audit_catalog` từ chối: as-of rule lạ, tham chiếu target/iden
 ## 4. Kết quả verify trên OULAD thật
 
 ```
-LEAKAGE AUDIT:  status = ok · 5 features · 16 injection probes · 0 violation
-CATALOG AUDIT:  ok (5 features)
+LEAKAGE AUDIT:  status = ok · 6 features · 16 injection probes · 0 violation
+CATALOG AUDIT:  ok (6 features)
 QUALITY GATES:  status = ok · 27,535 dòng · 0 errors
   — null cao nhất: avg_score_submitted 27.3% (hợp lệ — SV chưa đủ điểm), imd_band 3.7%
   — PSI demo (snapshot vs chính nó): volume_ratio = 1.0, mọi PSI = 0
@@ -57,7 +57,7 @@ QUALITY GATES:  status = ok · 27,535 dòng · 0 errors
 
 → Snapshot M2 được chứng minh **không leakage** và **đạt đủ 4 gates** — sẵn sàng cấp cho M4.
 
-## 5. Test suite — 53/53 pass (17 test M3 mới)
+## 5. Test suite M1–M3 — 97 test pass
 
 **Triết lý test: gate phải bắt được lỗi cấy chủ đích** — gate không bắt được lỗi cứng nhắc thì vô dụng:
 
@@ -72,7 +72,7 @@ QUALITY GATES:  status = ok · 27,535 dòng · 0 errors
 ## 6. Cách chạy lại
 
 ```bash
-.venv/bin/python -m pytest tests/ -q   # 53/53 pass
+.venv/bin/python -m pytest tests/ -q   # 163 passed
 .venv/bin/python -c "
 from learnguard.data.leakage import LeakageAuditor
 from learnguard.data.quality import validate_snapshot
@@ -84,8 +84,8 @@ print(audit.status, gate.status)
 
 ## 7. Việc tiếp theo — M4
 
-1. Baseline Logistic Regression + candidate model trên snapshot M2
+1. Phase 5: baseline Logistic Regression cố định trên train; candidate model để phase sau
 2. **Temporal split**: train 2013B+J → validation 2014B → holdout 2014J (không random split — tránh trùng SV giữa train/test)
 3. Metrics: Recall@top-k, AUC, ECE, fairness slices (gender/region/disability/age), false negatives
-4. Tuning threshold CHỈ trên validation; NaN `avg_score_submitted` xử lý tường minh
+4. Phase đánh giá sau mới tuning threshold CHỈ trên validation; Phase 5 không tuning
 5. Model card + registry metadata

@@ -5,6 +5,7 @@ import json
 import pandas as pd
 import pytest
 
+from learnguard.data.ingestion import _dataframe_content_hash
 from learnguard.data.features import (
     FEATURE_CATALOG,
     PointInTimeFeatureBuilder,
@@ -95,7 +96,8 @@ def build_from_tables(tables, cutoff=27, tmp_path=None):
         on = ["code_module", "code_presentation"] if f.name == "module_presentation" else KEYS
         snap = snap.merge(fdf, on=on, how="left")
     snap = builder.assign_split(snap)
-    for col in ("n_clicks_before_cutoff", "click_trend_w3_w4", "n_submitted_before_cutoff"):
+    for col in ("n_clicks_before_cutoff", "active_days_before_cutoff",
+                "click_trend_w3_w4", "n_submitted_before_cutoff"):
         snap[col] = snap[col].fillna(0)
     snap["insufficient_data"] = (snap["n_clicks_before_cutoff"] == 0) & (snap["n_submitted_before_cutoff"] == 0)
     return snap, builder
@@ -149,7 +151,8 @@ def test_future_event_injection_does_not_change_snapshot():
     snap_after, _ = build_from_tables(injected)
 
     feature_cols = ["n_clicks_before_cutoff", "click_trend_w3_w4",
-                    "n_submitted_before_cutoff", "avg_score_submitted"]
+                    "active_days_before_cutoff", "n_submitted_before_cutoff",
+                    "avg_score_submitted"]
     pd.testing.assert_frame_equal(
         snap_before[KEYS + feature_cols], snap_after[KEYS + feature_cols]
     )
@@ -160,6 +163,25 @@ def test_click_trend_w3_w4():
     snap, _ = build_from_tables(base_tables())
     row = snap[snap["id_student"] == 101].iloc[0]
     assert row["click_trend_w3_w4"] == 50
+
+
+def test_active_days_include_negative_and_cutoff_but_not_future():
+    row = build_from_tables(base_tables())[0].query("id_student == 101").iloc[0]
+    assert row["active_days_before_cutoff"] == 4  # -5, 3, 14, 27; exclude 28
+
+
+def test_active_days_count_each_date_once():
+    tables = base_tables()
+    duplicate_day = tables["studentVle"].iloc[[1]].copy()
+    duplicate_day["sum_click"] = 999
+    tables["studentVle"] = pd.concat([tables["studentVle"], duplicate_day], ignore_index=True)
+    row = build_from_tables(tables)[0].query("id_student == 101").iloc[0]
+    assert row["active_days_before_cutoff"] == 4
+
+
+def test_cutoff_other_than_27_is_rejected():
+    with pytest.raises(ValueError, match="unsupported_cutoff_day"):
+        PointInTimeFeatureBuilder().build_cohort(base_tables(), 28)
 
 
 # ---- submissions ------------------------------------------------------------
@@ -267,6 +289,14 @@ def write_canonical(tmp_path, tables):
     canonical.mkdir(parents=True, exist_ok=True)
     for name, df in tables.items():
         df.to_parquet(canonical / f"{name}.parquet", index=False)
+    hashes = {name: _dataframe_content_hash(df) for name, df in tables.items()}
+    (tmp_path / "ingestion_report.json").write_text(json.dumps({
+        "status": "ok", "canonical_published": True,
+        "canonical_content_hashes": hashes,
+    }))
+    (tmp_path / "ingestion.success.json").write_text(json.dumps({
+        "status": "ok", "canonical_content_hashes": hashes,
+    }))
     return tmp_path
 
 
@@ -292,7 +322,11 @@ def test_end_to_end_build_writes_snapshot_and_ledger(tmp_path):
         "courses", "assessments", "studentInfo", "studentRegistration", "studentAssessment", "studentVle"
     }
     assert "n_clicks_before_cutoff" in ledger["feature_rules"]
-    assert result.snapshot_version.startswith("snapshot-v1:cutoff27:")
+    assert result.snapshot_version.startswith("snapshot-v3:cutoff27:")
+    assert ledger["schema_version"] == "snapshot-v3"
+    assert "active_days_before_cutoff" in ledger["feature_rules"]
+    assert ledger["row_count"] == len(snap)
+    assert len(ledger["snapshot_content_hash"]) == 64
 
 
 def test_snapshot_changes_when_input_changes(tmp_path):

@@ -1,0 +1,150 @@
+name: full-oulad-verification
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 2 * * 1"
+
+jobs:
+  verify-real-data:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -e . --no-deps
+      - name: First full run
+        run: learnguard data run --source data/archive.zip --artifacts-dir artifacts --run-id ci-1
+      - name: Reproducibility run with baseline
+        run: >-
+          learnguard data run --source data/archive.zip --artifacts-dir artifacts
+          --baseline-snapshot artifacts/data-runs/ci-1/snapshot/snapshot.parquet
+          --run-id ci-2
+      - name: Assert semantic reproducibility
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          base = Path("artifacts/data-runs")
+          ledgers = [json.loads((base / run / "snapshot/snapshot.ledger.json").read_text())
+                     for run in ("ci-1", "ci-2")]
+          assert ledgers[0]["snapshot_version"] == ledgers[1]["snapshot_version"]
+          assert ledgers[0]["snapshot_content_hash"] == ledgers[1]["snapshot_content_hash"]
+          assert ledgers[0]["row_count"] == ledgers[1]["row_count"] == 27535
+          ingestion = [json.loads((base / run / "ingestion/ingestion_report.json").read_text())
+                       for run in ("ci-1", "ci-2")]
+          assert ingestion[0]["canonical_content_hashes"] == ingestion[1]["canonical_content_hashes"]
+          leakage = json.loads((base / "ci-2/reports/leakage_audit.json").read_text())
+          assert leakage["status"] == "ok" and not leakage["violations"]
+          assert leakage["source_checks"] == 16
+          quality = json.loads((base / "ci-2/reports/quality_report.json").read_text())
+          assert quality["volume_ratio"] == 1.0
+          assert set(quality["gate_status"].values()) == {"passed"}
+          expected_psi = {
+              "n_clicks_before_cutoff", "active_days_before_cutoff",
+              "click_trend_w3_w4", "n_submitted_before_cutoff",
+              "avg_score_submitted", "num_of_prev_attempts", "studied_credits",
+              "gender", "region", "highest_education", "imd_band", "age_band",
+              "disability", "module_presentation",
+          }
+          assert set(quality["psi_by_feature"]) == expected_psi
+          assert all(value == 0.0 for value in quality["psi_by_feature"].values())
+          PY
+      - name: Build train-only preprocessing twice
+        run: |
+          learnguard ml preprocess \
+            --data-run-dir artifacts/data-runs/ci-2 \
+            --artifacts-dir artifacts --run-id preprocessing-1
+          learnguard ml preprocess \
+            --data-run-dir artifacts/data-runs/ci-2 \
+            --artifacts-dir artifacts --run-id preprocessing-2
+      - name: Assert preprocessing reproducibility
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/preprocessing-runs")
+          manifests = [json.loads((root / run / "preprocessor.manifest.json").read_text())
+                       for run in ("preprocessing-1", "preprocessing-2")]
+          reports = [json.loads((root / run / "preprocessor.verification.json").read_text())
+                     for run in ("preprocessing-1", "preprocessing-2")]
+          for field in ("preprocessor_version", "preprocessing_contract_hash",
+                        "train_feature_semantic_hash", "learned_state_hash",
+                        "output_feature_names", "output_feature_count"):
+              assert manifests[0][field] == manifests[1][field]
+          assert manifests[0]["output_feature_count"] == 36
+          expected_rows = {"train": 11811, "validation": 6510, "holdout": 9214}
+          assert reports[0]["status"] == reports[1]["status"] == "ok"
+          for split, rows in expected_rows.items():
+              assert reports[0]["split_results"][split]["row_count"] == rows
+              assert reports[1]["split_results"][split]["row_count"] == rows
+              assert (reports[0]["split_results"][split]["transformed_semantic_hash"] ==
+                      reports[1]["split_results"][split]["transformed_semantic_hash"])
+              assert reports[0]["split_results"][split]["nan_count"] == 0
+              assert reports[0]["split_results"][split]["inf_count"] == 0
+          PY
+      - name: Train fixed Logistic baseline twice
+        run: |
+          learnguard ml train-logistic \
+            --data-run-dir artifacts/data-runs/ci-2 \
+            --preprocessing-artifact-dir artifacts/preprocessing-runs/preprocessing-1 \
+            --artifacts-dir artifacts --run-id logistic-1
+          learnguard ml train-logistic \
+            --data-run-dir artifacts/data-runs/ci-2 \
+            --preprocessing-artifact-dir artifacts/preprocessing-runs/preprocessing-1 \
+            --artifacts-dir artifacts --run-id logistic-2
+          learnguard ml verify-model \
+            --model-artifact-dir artifacts/model-runs/logistic-1 \
+            --data-run-dir artifacts/data-runs/ci-2 \
+            --preprocessing-artifact-dir artifacts/preprocessing-runs/preprocessing-1
+          learnguard ml verify-model \
+            --model-artifact-dir artifacts/model-runs/logistic-2 \
+            --data-run-dir artifacts/data-runs/ci-2 \
+            --preprocessing-artifact-dir artifacts/preprocessing-runs/preprocessing-1
+      - name: Assert Logistic semantic reproducibility
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          root = Path("artifacts/model-runs")
+          manifests = [json.loads((root / run / "model.manifest.json").read_text())
+                       for run in ("logistic-1", "logistic-2")]
+          reports = [json.loads((root / run / "model.training-report.json").read_text())
+                     for run in ("logistic-1", "logistic-2")]
+          fields = (
+              "model_semantic_version", "model_contract_hash",
+              "training_matrix_semantic_hash", "training_target_semantic_hash",
+              "coefficient_semantic_hash", "intercept_semantic_hash",
+              "learned_state_hash", "train_probability_semantic_hash",
+              "output_feature_names", "learned_classes",
+          )
+          for field in fields:
+              assert manifests[0][field] == manifests[1][field]
+          for manifest in manifests:
+              assert manifest["train_row_count"] == 11811
+              assert manifest["output_feature_count"] == 36
+              assert manifest["learned_classes"] == [0, 1]
+              assert manifest["convergence_status"] == "converged"
+          for report in reports:
+              assert report["status"] == "ok"
+              assert report["nan_count"] == report["inf_count"] == 0
+              assert not report["warnings"] and not report["errors"]
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: full-oulad-reports
+          path: |
+            artifacts/data-runs/*/reports/*.json
+            artifacts/data-runs/*/ingestion/ingestion_report.json
+            artifacts/data-runs/*/ingestion/ingestion.success.json
+            artifacts/data-runs/*/snapshot/*.ledger.json
+            artifacts/data-runs/*/snapshot/*.success.json
+            artifacts/preprocessing-runs/*/preprocessor.manifest.json
+            artifacts/preprocessing-runs/*/preprocessor.verification.json
+            artifacts/preprocessing-runs/*/preprocessor.success.json
+            artifacts/model-runs/*/model.manifest.json
+            artifacts/model-runs/*/model.training-report.json
+            artifacts/model-runs/*/model.success.json

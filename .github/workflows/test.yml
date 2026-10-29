@@ -1,0 +1,20 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  unit-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r requirements.txt pytest==9.1.1
+      - run: python -m pip install -e . --no-deps
+      - run: python -m pytest tests -q
+      - run: git diff --check
