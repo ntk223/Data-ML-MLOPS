@@ -13,11 +13,11 @@ Sản phẩm:
 
 ```
 artifacts/feature_snapshot_m2/
-├── snapshot.parquet        # 27,535 dòng × 22 cột — đầu vào duy nhất của M4/M5
+├── snapshot.parquet        # 27,535 dòng × 20 cột — đầu vào duy nhất của M4/M5
 └── snapshot.ledger.json    # AsOfLedger — bằng chứng chống leakage
 ```
 
-Snapshot version hiện tại: `snapshot-v3:cutoff27:f917f578:f3ee9894` (semantic source hash + full transformation contract).
+Snapshot version: `snapshot-v1:cutoff27:35de81037b78` (deterministic từ input hash — cùng dữ liệu luôn ra cùng version).
 
 ## 2. Cohort — chọn "dân" dự đoán
 
@@ -31,13 +31,13 @@ Quy tắc (ghi trong ledger `cohort_rules`):
 
 Lý do loại 5,040: họ đã "có đáp án" (đã bỏ học) **trước** thời điểm dự đoán — giữ lại là target leakage. Rút lui *sau* cutoff (5,119 SV) được giữ vì tại ngày 27 chưa ai biết.
 
-## 3. Feature table — 22 cột
+## 3. Feature table — 20 cột
 
 | Nhóm | Cột |
 |---|---|
 | Khóa (PK từ M1) | `code_module`, `code_presentation`, `id_student` |
 | Static (có trước khai giảng) | `gender`, `region`, `highest_education`, `imd_band` + `imd_band_missing` (1,028 dòng), `age_band`, `num_of_prev_attempts`, `studied_credits`, `disability` |
-| Tương tác VLE | `n_clicks_before_cutoff`, `active_days_before_cutoff` (**đều gồm date âm**), `click_trend_w3_w4` |
+| Tương tác VLE | `n_clicks_before_cutoff` (SUM, **gồm date âm** — quyết định #6), `click_trend_w3_w4` |
 | Bài nộp | `n_submitted_before_cutoff`, `avg_score_submitted` (**loại Exam không ngày** — quyết định #4) |
 | Metadata | `module_presentation`, `insufficient_data` (796 SV) |
 | Target | `final_result`, `label` (0 = Pass/Distinction, 1 = Fail/Withdrawn) — **nằm ngoài feature catalog** |
@@ -131,4 +131,4 @@ build_feature_snapshot('artifacts/ingestion_m1_verify', 'artifacts/feature_snaps
 
 Nguyên tắc: holdout chỉ chạm 1 lần; trùng SV giữa 2013/2014 là hiện tượng thật (không leakage — nhãn 2014 không nằm trong row 2013); M5 vẫn chấm điểm TOÀN BỘ cohort bất kể split.
 
-`snapshot_version` là `schema:cutoff:source_hash:contract_hash` — version đổi khi **cả** dữ liệu **hoặc** hợp đồng rule đổi. Snapshot hiện tại: `snapshot-v3:cutoff27:f917f578:f3ee9894`, audit + gates đều `ok`.
+`snapshot_version` nâng cấp thành `cutoff:source_hash:rules_hash` — version đổi khi **cả** dữ liệu **hoặc** hợp đồng rule đổi. Snapshot hiện tại: `snapshot-v1:cutoff27:35de8103:39e10cfa`, audit + gates đều `ok`.

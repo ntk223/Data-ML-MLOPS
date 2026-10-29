@@ -6,20 +6,27 @@ preprocessing tiếp tục tuân theo `PIPELINE_GUIDE.md` và không bị model 
 ## Chạy baseline
 
 ```bash
+.venv/bin/learnguard ml preprocess \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
+  --artifacts-dir artifacts \
+  --run-id <preprocessing-run-id>
+
 .venv/bin/learnguard ml train-logistic \
-  --data-run-dir artifacts/data-runs/<data-run-id> \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
   --preprocessing-artifact-dir artifacts/preprocessing-runs/<preprocessing-run-id> \
   --artifacts-dir artifacts \
   --run-id <model-run-id>
 
 .venv/bin/learnguard ml verify-model \
   --model-artifact-dir artifacts/model-runs/<model-run-id> \
-  --data-run-dir artifacts/data-runs/<data-run-id> \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
   --preprocessing-artifact-dir artifacts/preprocessing-runs/<preprocessing-run-id>
 ```
 
 Training chỉ dùng fitted preprocessor đã xác minh và temporal train. Stage không refit
-preprocessing, không đọc validation/holdout, không tuning và không tính metric.
+preprocessing, không dùng validation/holdout để fit, không tuning và không tính metric.
+Việc load snapshot luôn đi qua `load_snapshot_splits()` theo đúng `PIPELINE_GUIDE.md`;
+model trainer chỉ lấy thuộc tính `train` từ kết quả loader.
 
 ## Model contract
 
@@ -46,9 +53,12 @@ nhưng không làm pickle từ nguồn không tin cậy trở nên an toàn.
 ## Full OULAD verification
 
 - Train rows: 11.811.
-- Input features: 36 dense `float64` features từ preprocessing-v1.
+- Data contract: `snapshot-v1:cutoff27:35de8103:39e10cfa`, giữ nguyên 21 cột
+  snapshot và 15 cột đầu vào được công bố trong `PIPELINE_GUIDE.md`.
+- Model matrix: 38 dense `float64` features từ preprocessing-v1 sau encoding.
 - Learned classes: `[0, 1]`.
-- Convergence: 27 iterations, không warning.
-- Model semantic version: `logreg-v1:39911ebf:04c126ab:2f7d4d10`.
+- Convergence: 39 iterations, không warning.
+- Preprocessor semantic version: `preprocessor-v1:b8c61096:4cfed679:cfb51a0d`.
+- Model semantic version: `logreg-v1:bab3d0df:48843ee8:1ccd9891`.
 - Hai identical runs có cùng matrix, target, coefficient, intercept, learned-state và
   train-probability semantic hashes.

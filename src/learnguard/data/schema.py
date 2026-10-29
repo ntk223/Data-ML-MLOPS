@@ -150,7 +150,7 @@ OULAD_TABLE_SCHEMAS: dict[str, TableSchema] = {
     "studentVle": TableSchema(
         # Event log — KHÔNG có PK nghiêm ngặt: trùng (module,pres,student,site,date)
         # là hợp lệ (sự kiện click riêng). Bản sao y hệt toàn cột được M1 dedupe
-        # (verify lại 2026-10-29: 787,170 dòng exact-duplicate), phần sự kiện SUM ở M2.
+        # (verify 2026-10-26: 1,429,783 dòng exact-duplicate), phần sự kiện SUM ở M2.
         "studentVle",
         (),
         {

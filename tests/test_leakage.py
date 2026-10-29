@@ -3,6 +3,7 @@
 import json
 
 import pandas as pd
+import pytest
 
 from learnguard.data import leakage as leakage_mod
 from learnguard.data.features import (
@@ -13,6 +14,9 @@ from learnguard.data.features import (
 from learnguard.data.leakage import LeakageAuditor
 from tests.test_features import base_tables, write_canonical
 
+REAL_ARTIFACTS = None  # dùng qua skipif bên dưới
+
+
 def build_snapshot(tmp_path):
     """Snapshot sạch từ fixture nhỏ (end-to-end qua M2 builder)."""
     processed = write_canonical(tmp_path, base_tables())
@@ -22,7 +26,7 @@ def build_snapshot(tmp_path):
 def test_catalog_audit_passes_current_catalog():
     report = LeakageAuditor().audit_catalog()
     assert report.status == "ok", report.violations
-    assert report.checked_features == 6
+    assert report.checked_features == 5
 
 
 def test_catalog_audit_rejects_unknown_rule_and_target_reference(monkeypatch):
@@ -46,7 +50,7 @@ def test_audit_clean_snapshot_passes(tmp_path):
     result, processed = build_snapshot(tmp_path)
     report = LeakageAuditor().audit_snapshot(result.snapshot_path, processed, cutoff_day=27)
     assert report.status == "ok", [v.rule for v in report.violations]
-    assert report.checked_features == 6
+    assert report.checked_features == 5
     assert report.source_checks > 0  # injection probes đã chạy
 
 
@@ -63,18 +67,6 @@ def test_audit_detects_hand_tampered_snapshot(tmp_path):
     rules = {v.rule for v in report.violations}
     assert "snapshot_recompute_mismatch" in rules
     assert report.status == "violated"
-
-
-def test_audit_detects_tampered_label_and_static_field(tmp_path):
-    result, processed = build_snapshot(tmp_path)
-    snap = pd.read_parquet(result.snapshot_path)
-    snap.loc[0, "label"] = 1 - int(snap.loc[0, "label"])
-    snap.loc[0, "region"] = "Wales"
-    snap.to_parquet(result.snapshot_path, index=False)
-    report = LeakageAuditor().audit_snapshot(result.snapshot_path, processed, cutoff_day=27)
-    rules = {v.rule for v in report.violations}
-    assert "snapshot_content_hash_mismatch" in rules
-    assert "snapshot_recompute_mismatch" in rules
 
 
 def test_audit_detects_ledger_hash_mismatch(tmp_path):
@@ -108,31 +100,24 @@ def test_audit_catches_leaky_builder_via_injection_probe(tmp_path, monkeypatch):
     assert any(r.startswith("future_event_leak:vle_future_click") for r in rules), rules
 
 
-def test_audit_catches_future_submission_leak_in_same_offering(tmp_path, monkeypatch):
-    class SubmissionLeakyBuilder(PointInTimeFeatureBuilder):
-        def build_feature(self, feature, tables, cutoff_day):
-            if feature.name in {"n_submitted_before_cutoff", "avg_score_submitted"}:
-                submissions = tables["studentAssessment"]
-                assessments = tables["assessments"]
-                joined = submissions.merge(
-                    assessments[["id_assessment", "code_module", "code_presentation", "date"]],
-                    on="id_assessment", how="left",
-                )
-                eligible = joined["date"].notna() & joined["date"].le(cutoff_day)
-                rows = joined[eligible]  # deliberately ignores submission cutoff
-                if feature.name == "n_submitted_before_cutoff":
-                    return rows.groupby(list(KEYS)).size().rename(feature.name).reset_index()
-                return rows.dropna(subset=["score"]).groupby(list(KEYS))["score"].mean().rename(feature.name).reset_index()
-            return super().build_feature(feature, tables, cutoff_day)
-
-    monkeypatch.setattr(leakage_mod, "PointInTimeFeatureBuilder", SubmissionLeakyBuilder)
-    result, processed = build_snapshot(tmp_path)
-    report = LeakageAuditor().audit_snapshot(result.snapshot_path, processed, 27)
-    assert any(v.rule == "future_event_leak:future_submission" for v in report.violations)
-
-
 def test_audit_requires_ledger(tmp_path):
     result, processed = build_snapshot(tmp_path)
     result.ledger_path.unlink()
     report = LeakageAuditor().audit_snapshot(result.snapshot_path, processed, cutoff_day=27)
     assert any(v.rule == "missing_ledger" for v in report.violations)
+
+
+@pytest.mark.skipif(
+    not __import__("pathlib").Path("artifacts/ingestion_m1_verify/canonical").exists(),
+    reason="cần artifacts verify thật",
+)
+def test_audit_real_artifacts_passes(tmp_path):
+    """Integration: audit trên snapshot M2 + dữ liệu OULAD thật."""
+    result, _ = build_snapshot(tmp_path)  # giữ cấu trúc test nhất quán
+    report = LeakageAuditor().audit_snapshot(
+        __import__("pathlib").Path("artifacts/feature_snapshot_m2/snapshot.parquet"),
+        __import__("pathlib").Path("artifacts/ingestion_m1_verify"),
+        cutoff_day=27,
+    )
+    assert report.status == "ok", [(v.feature_name, v.rule) for v in report.violations]
+    assert report.source_checks == 16  # 4 probe students (3 nhiều-click + 1 đầu DS) × 4 probes

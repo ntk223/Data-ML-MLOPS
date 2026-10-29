@@ -62,7 +62,7 @@ Triết lý thiết kế: **validate + tách, không sửa** — không có `fil
 
 ## 5. Kết quả verify trên OULAD thật
 
-Chạy: `ingest_oulad('data/archive.zip', 'artifacts/ingestion_m1_verify')`
+Chạy: `ingest_oulad('data/oulad/archive', 'artifacts/ingestion_m1_verify')`
 
 | Bảng | Raw | Clean | Quarantine | Deduped | Khớp EDA |
 |---|---:|---:|---:|---:|:---:|
@@ -111,7 +111,7 @@ artifacts/ingestion_m1_verify/
 ```bash
 .venv/bin/python -m pytest tests/ -q                                  # 23/23 pass
 .venv/bin/python -c "from learnguard.data.ingestion import ingest_oulad; \
-    ingest_oulad('data/archive.zip', 'artifacts/ingestion')"
+    ingest_oulad('data/oulad/archive', 'artifacts/ingestion')"
 ```
 
 ## 9. Việc tiếp theo — M2
