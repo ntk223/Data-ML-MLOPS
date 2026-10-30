@@ -1,1 +1,1 @@
-"""Training, evaluation and batch scoring modules (M4–M5)."""
+"""Train-only preprocessing and Logistic baseline artifact modules."""

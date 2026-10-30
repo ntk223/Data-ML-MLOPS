@@ -14,7 +14,9 @@
 
 ## M4–M5 · ML pipeline
 
-- [ ] Implement baseline Logistic Regression và model ứng viên.
+- [x] Implement baseline Logistic Regression train-only dưới dạng ML stage riêng;
+  không sửa data pipeline contract.
+- [ ] Implement model ứng viên.
 - [ ] Dùng temporal split: train 2013B+2013J → validation 2014B → holdout 2014J. *(hợp đồng từ data engineer — SPLIT_RULES; ưu tiên train nhiều, holdout 2014J là kỳ duy nhất chưa tiêu hao)*
 - [ ] Báo cáo Recall@top-k, AUC, ECE, fairness slices và false negatives.
 - [ ] Tuning threshold chỉ trên validation; ghi model card/registry metadata.

@@ -49,3 +49,10 @@ python -m venv .venv
 Dependencies runtime nằm trong `requirements.txt` (pandas, pyarrow); công cụ notebook/EDA nằm trong `requirements-dev.txt`. Notebook EDA: [`notebooks/01_oulad_eda.ipynb`](notebooks/01_oulad_eda.ipynb).
 
 Python package metadata is in [`pyproject.toml`](pyproject.toml). Setup and run commands will be added as the TODO stages are implemented. No Docker Compose or production pipeline is included at this scaffold stage.
+
+## Logistic Regression baseline
+
+Run the unchanged data pipeline exactly as documented in
+[`docs/PIPELINE_GUIDE.md`](docs/PIPELINE_GUIDE.md), then use the resulting
+`snapshot.parquet` with the model-only commands documented in
+[`docs/M4_LOGISTIC_BASELINE.md`](docs/M4_LOGISTIC_BASELINE.md).
