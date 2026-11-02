@@ -60,6 +60,8 @@ chmod 600 .env
 Xác nhận an toàn: `git check-ignore .env` phải in ra `.env` (đã gitignore).
 
 > **An ninh:** DSN là secret — nhận qua kênh riêng từ backend, không gửi qua chat/ticket công khai. Khi backend cấp DSN mới (rotate) → chỉ cần sửa `.env`, không cần đổi code.
+>
+> **Quyết định đã chấp nhận (dự án học tập):** dùng **chung credential root/user duy nhất** cho cả ml-data (ghi) và backend (đọc) — KHÔNG tách user. Chấp nhận được vì: (1) ml-data viết qua đúng 1 câu UPSERT cố định có bảng validate + rows parameterized, không có đường SQL tự do; (2) backend chỉ SELECT qua API. Guardrail sở hữu ghi chỉ tồn tại ở **tầng code**, không ở tầng DB — nếu leak DSN thì toàn bộ DB bị lộ. Khi chuyển thành product: tách 2 user ngay.
 
 ---
 
@@ -178,7 +180,7 @@ Kiểm tra cron đã đăng ký: `crontab -l`. Chạy thử ngay không cần ch
 - [ ] 7 CSV đúng chỗ, quickstart M1→M3 in `PIPELINE OK`
 - [ ] Model release đầu tiên đã train (`artifacts/model-runs/<run-id>/model.success.json` tồn tại)
 - [ ] `.env` có đủ 3 biến (`LEARNGUARD_PG_DSN`, `MODEL_RUN_ID`, `PREPROCESS_RUN_ID`), chmod 600, gitignore xác nhận
-- [ ] Backend xác nhận: server PG chạy, tường lửa cho phép VPS, user có quyền ghi `ml_predictions`
+- [ ] Backend xác nhận: server PG chạy, tường lửa cho phép VPS, credential đã cấp (dự án học tập: dùng chung credential — xem ghi nhận ở mục 3)
 - [ ] Score thủ công 1 lần: `database_write: ok` trong JSON output
 - [ ] Crontab đăng ký + chạy thử `./scripts/cron_pipeline.sh` thành công
 - [ ] Backend xác nhận đọc được dự đoán mới nhất qua bảng `ml_predictions`
