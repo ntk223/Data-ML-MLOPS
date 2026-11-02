@@ -15,3 +15,6 @@ artifacts/
 mlruns/
 .coverage
 htmlcov/
+.opencode
+.v-skills
+v-agent-debug.log
