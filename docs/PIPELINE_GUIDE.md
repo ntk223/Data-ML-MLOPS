@@ -342,3 +342,30 @@ learnguard ml score \
 | M5 score | `artifacts/prediction-batches/<run-id>/` |
 
 **Nhắc lại 3 luật vàng** (mục 5.3): tune chỉ trên validation · holdout chạm 1 lần · mọi thao tác qua `load_snapshot_splits()`, không lọc tay. **Hạ tầng Postgres thuộc team backend** — máy dev không cần PG.
+
+---
+
+## 10. Luồng vận hành production (chốt 2026-11-02)
+
+Vai trò các bên đã chốt: **backend chỉ làm 2 nhiệm vụ — quản lý hồ sơ + hiển thị dự đoán.** Backend KHÔNG xuất dữ liệu, KHÔNG chạy cronjob data.
+
+```
+LMS extract (file) ──► [Cronjob ml-data]  M1 → M2 → M3 gates ──FAIL──► dừng + cảnh báo
+                                                              │ PASS
+                                                              ▼
+                                              M5 score ──► upsert ml_predictions (DB backend vận hành)
+                                                                        │
+                                                        Backend SELECT ──► UI hồ sơ + hiển thị dự đoán
+```
+
+| Thành phần | Vai trò | Sở hữu |
+|---|---|---|
+| LMS extract | Nguồn dữ liệu hành vi (hiện tại = OULAD zip; production = extract từ LMS trường) | ml-data tự đọc — không ai đẩy |
+| Cronjob | **1 cron duy nhất** chạy trọn chuỗi M1→M5; M3 gates là điểm chặn — fail thì KHÔNG score | ml-data (data engineer) |
+| Backend app | Quản lý hồ sơ + SELECT `ml_predictions` hiển thị + ghi feedback cố vấn (dùng đo precision thực địa sau này) | backend repo |
+| PostgreSQL | Vận hành server + cấp DSN; không ghi prediction | backend team |
+| Bảng `ml_predictions` | ml-data sở hữu GHI (upsert); backend chỉ SELECT | xem `M5_PREDICTION_BATCH.md` |
+
+**Nguyên tắc đã loại bỏ:** không có hợp đồng "backend xuất extract" — nếu sau này backend trở thành nguồn hồ sơ nhân khẩu học duy nhất, chỉ cần backend xuất 1 file hồ sơ theo schema thống nhất cho M1 ăn (file đơn giản + checksum, không phải API).
+
+**Việc định kỳ khi có kỳ học mới:** đăng ký `SPLIT_RULES` cho presentation mới (đầu mỗi kỳ, data engineer) — không đăng ký → pipeline fail lớn `unknown_presentation_for_split` đúng thiết kế.
