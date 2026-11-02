@@ -1,7 +1,7 @@
 # PIPELINE_GUIDE — Hướng dẫn vận hành pipeline dữ liệu LearnGuard
 
 **Dành cho:** ML engineer / bất kỳ ai cần chạy pipeline `ml-data` hoặc tiêu thụ feature snapshot.
-**Phạm vi:** M1 (ingestion) → M2 (feature snapshot) → M3 (leakage audit + quality gates). Phần M4/M5 do ML owner phát triển trên đầuContract được mô tả ở mục 5.
+**Phạm vi:** M1 (ingestion) → M2 (feature snapshot) → M3 (leakage audit + quality gates) + runbook toàn trình M4/M5 ở mục 9.
 **Người chịu trách nhiệm pipeline:** data engineer (người viết tài liệu này). Mọi thắc mắc về split/feature/quarantine → hỏi data engineer, **không tự sửa**.
 
 ---
@@ -257,3 +257,88 @@ Thay đổi bất kỳ hợp đồng nào (thêm feature, đổi split, đổi c
 | `docs/M3_REPORT.md` | 3 lớp leakage audit, 4 quality gates, MIN_PSI_SAMPLE=200 |
 | `docs/REPOSITORY_LAYOUT.md` | Ranh giới repo + spec `prediction-batch.v1` (M5 → backend) |
 | `docs/IMPLEMENTATION_TODO.md` | Checklist tiến độ M1–M5 |
+| `docs/M5_PREDICTION_BATCH.md` | Hợp đồng M5: batch artifact, công thức `student_key`, bảng `ml_predictions` |
+
+---
+
+## 9. RUNBOOK chuẩn — toàn trình từ zip đến prediction batch
+
+Mọi lệnh dưới đây **đã verify chạy thật** trên OULAD. Chạy lần lượt theo thứ tự; cwd luôn là `ml-data/`.
+
+### Bước 0 — Môi trường (chạy 1 lần)
+
+```bash
+cd ml-data
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt        # runtime (pandas, pyarrow, psycopg...)
+.venv/bin/pip install -e .                       # cài lệnh `learnguard`
+.venv/bin/pip install -r requirements-dev.txt    # chỉ khi cần chạy test/notebook
+```
+
+### Bước 1 — Dữ liệu (chạy 1 lần)
+
+```bash
+unzip data/archive.zip -d data/oulad/archive     # 7 CSV (~464MB); có sẵn rồi thì bỏ qua
+```
+
+### Bước 2 — Kiểm tra cài đặt
+
+```bash
+.venv/bin/python -m pytest tests/ -q
+# kỳ vọng: toàn pass; các test PostgreSQL tự SKIP khi không có DB (bình thường — PG thuộc backend)
+```
+
+### Bước 3 — Pipeline dữ liệu M1→M3 (1 lệnh)
+
+Chạy đúng quickstart ở mục 4 — đầu ra: `artifacts/feature_snapshot_m2/snapshot.parquet` + ledger, đã qua audit + gates. **Chạy lại mỗi khi dữ liệu nguồn hoặc hợp đồng feature/split đổi.**
+
+### Bước 4 — M4: train model (ML owner)
+
+```bash
+# 4a. Fit preprocessing CHỈ trên train (chống leakage)
+learnguard ml preprocess \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
+  --artifacts-dir artifacts --run-id <run-id-pre>
+
+# 4b. Train Logistic baseline
+learnguard ml train-logistic \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
+  --preprocessing-artifact-dir artifacts/preprocessing-runs/<run-id-pre> \
+  --artifacts-dir artifacts --run-id <run-id-model>
+
+# 4c. (khuyến nghị) verify artifact trước khi score
+learnguard ml verify-preprocessor --artifact-dir artifacts/preprocessing-runs/<run-id-pre> \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet
+learnguard ml verify-model --model-artifact-dir artifacts/model-runs/<run-id-model> \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
+  --preprocessing-artifact-dir artifacts/preprocessing-runs/<run-id-pre>
+```
+
+### Bước 5 — M5: score + xuất prediction batch
+
+```bash
+# Chế độ file-only (không cần DB — dùng khi backend chưa cấp DSN)
+learnguard ml score \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
+  --model-artifact-dir artifacts/model-runs/<run-id-model> \
+  --preprocessing-artifact-dir artifacts/preprocessing-runs/<run-id-pre> \
+  --artifacts-dir artifacts --run-id <run-id-score> \
+  --split holdout            # hoặc bỏ để chấm cả 3 tập
+
+# Chế độ production — thêm cờ ghi DB (DSN do BACKEND cấp qua env):
+#   --pg-dsn "$LEARNGUARD_PG_DSN" --pg-table ml_predictions
+```
+
+Đầu ra `artifacts/prediction-batches/<run-id-score>/`: `predictions.parquet` + `manifest.json` (prediction-batch.v1) + `success.json`. Backend đọc/verify theo `docs/M5_PREDICTION_BATCH.md`.
+
+### Bản đồ artifact toàn trình
+
+| Bước | Vị trí đầu ra |
+|---|---|
+| M1 | `artifacts/ingestion_m1_verify/` (canonical + quarantine + report) |
+| M2 | `artifacts/feature_snapshot_m2/` (snapshot.parquet + ledger) |
+| M4 preprocess | `artifacts/preprocessing-runs/<run-id>/` |
+| M4 train | `artifacts/model-runs/<run-id>/` (model.joblib + manifest + training-report) |
+| M5 score | `artifacts/prediction-batches/<run-id>/` |
+
+**Nhắc lại 3 luật vàng** (mục 5.3): tune chỉ trên validation · holdout chạm 1 lần · mọi thao tác qua `load_snapshot_splits()`, không lọc tay. **Hạ tầng Postgres thuộc team backend** — máy dev không cần PG.
