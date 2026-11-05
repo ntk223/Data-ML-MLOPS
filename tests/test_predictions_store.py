@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from learnguard.cli import main
-from learnguard.data.loading import SnapshotSplits, load_snapshot_splits
+from learnguard.data.loading import SnapshotPartitions, load_snapshot_splits
 from learnguard.ml import scoring as scoring_module
 from learnguard.ml.predictions_store import (
     DEFAULT_TABLE,
@@ -138,13 +138,14 @@ def test_empty_split_rejected(model_run, tmp_path, monkeypatch):
     root, snapshot, preprocessor, model = model_run
     splits = load_snapshot_splits(snapshot)
     loaded = load_logistic_model_artifact(model.artifact_dir, snapshot, preprocessor.artifact_dir)
-    empty_validation = SnapshotSplits(
+    empty_validation = SnapshotPartitions(
         snapshot_version=splits.snapshot_version,
-        train=splits.train,
-        validation=splits.train.iloc[0:0].copy(),
-        holdout=splits.holdout,
+        partitions={"validation": splits.train.iloc[0:0].copy()},
     )
-    monkeypatch.setattr(scoring_module, "load_snapshot_splits", lambda _path: empty_validation)
+    monkeypatch.setattr(
+        scoring_module, "load_snapshot_partitions",
+        lambda _path, _names: empty_validation,
+    )
     monkeypatch.setattr(
         scoring_module, "load_scoring_model",
         lambda *_args, **_kwargs: LogisticScoringModel(loaded),

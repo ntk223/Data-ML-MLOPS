@@ -10,10 +10,13 @@
 artifacts/prediction-batches/<run-id>/
 ├── predictions.parquet   # 15 cột, payload
 ├── manifest.json         # prediction-batch.v1 — 9 trường
-└── success.json          # {schema_version, run_id, manifest_sha256, predictions_sha256}
+├── success.json          # checksum manifest/payload
+└── release.provenance.json # chỉ có ở release mode; producer-only audit sidecar
 ```
 
 Backend xác minh theo đúng trình tự 4 bước ở §4.3 của DB_CONTRACT.md (schema_version → sha256 parquet → sha256 manifest qua success.json → row_count).
+Sidecar không thuộc `prediction-batch.v1`, không thêm cột Parquet/PostgreSQL và
+backend cũ có thể bỏ qua. `success.json` ghi thêm checksum sidecar khi có release.
 
 ## 2. Công thức `student_key` (nguồn chân lý — backend tham chiếu khi join)
 
@@ -40,6 +43,21 @@ student_key = sha256( "learnguard:prediction-batch.v1:{code_module}:{code_presen
 | **Production — ghi DB** | `learnguard ml score ... --pg-dsn $LEARNGUARD_PG_DSN` | Sau khi publish file, upsert vào bảng `ml_predictions` (all-or-nothing; lỗi DB → lệnh fail, file vẫn còn làm audit trail) |
 | **Production — chỉ file** | `learnguard ml score ...` (không DSN) | Dùng khi backend chưa sẵn sàng DB hoặc cho môi trường offline |
 | **Chọn tập chấm** | `--split train\|validation\|holdout` (kết hợp được; mặc định cả 3) | Holdout chỉ dùng khi đánh giá cuối kỳ — xem §5.3 `PIPELINE_GUIDE.md` |
+
+Release mode:
+
+```bash
+learnguard ml score \
+  --snapshot <snapshot> \
+  --release-artifact-dir artifacts/model-releases/<release-id> \
+  --artifacts-dir artifacts --run-id <score-run> \
+  --split <explicit-split>
+```
+
+Khi có `--release-artifact-dir`, model/preprocessor/threshold CLI bị cấm; scorer
+verify release rồi dùng threshold đã khóa. Không có fallback `0.5`. Release hiện
+tại cấm `holdout` vì 2014J đã bị tiêu thụ. Legacy mode vẫn giữ model + preprocessor
+và mặc định `0.5` để tương thích caller cũ.
 
 ## 4. Hợp đồng đọc — bảng `ml_predictions` (backend implement API trên bảng này)
 

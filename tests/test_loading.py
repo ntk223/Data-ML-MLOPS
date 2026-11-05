@@ -9,6 +9,7 @@ from learnguard.data.features import FEATURE_CATALOG, build_feature_snapshot
 from learnguard.data.loading import (
     MODEL_FEATURE_COLUMNS,
     TARGET_COLUMN,
+    load_snapshot_partitions,
     load_snapshot_splits,
 )
 from tests.test_features import base_tables, write_canonical
@@ -62,6 +63,32 @@ def test_x_y_returns_committed_columns_and_target(snapshot):
     assert list(X.columns) == list(MODEL_FEATURE_COLUMNS)
     assert y.name == TARGET_COLUMN
     assert len(X) == len(y) == len(splits.train)
+
+
+def test_selected_loader_returns_only_requested_partitions(snapshot):
+    _, result = snapshot
+    selected = load_snapshot_partitions(
+        result.snapshot_path, ("train", "validation"),
+    )
+    assert set(selected.partitions) == {"train", "validation"}
+    assert set(selected.frame("train")["split"]) == {"train"}
+    assert set(selected.frame("validation")["split"]) == {"validation"}
+    with pytest.raises(ValueError, match="split_not_loaded:holdout"):
+        selected.frame("holdout")
+
+
+def test_selected_loader_passes_parquet_filter_without_holdout(snapshot, monkeypatch):
+    _, result = snapshot
+    original = pd.read_parquet
+    observed: list[object] = []
+
+    def spy(*args, **kwargs):
+        observed.append(kwargs.get("filters"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("learnguard.data.loading.pd.read_parquet", spy)
+    load_snapshot_partitions(result.snapshot_path, ("train", "validation"))
+    assert observed == [[("split", "in", ["train", "validation"])]]
 
 
 def test_model_feature_columns_cover_catalog_and_flags():

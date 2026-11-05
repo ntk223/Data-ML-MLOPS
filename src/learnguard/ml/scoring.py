@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 
 from learnguard.data.features import KEYS
-from learnguard.data.loading import SPLITS, load_snapshot_splits
+from learnguard.data.loading import SPLITS, load_snapshot_partitions
 from learnguard.ml.contracts import (
     PREDICTION_BATCH_SCHEMA_VERSION,
     PredictionBatchExporter,
@@ -114,7 +114,10 @@ class BatchScorer:
     def score(self, snapshot_path: Path | str, model_path: Path | str,
               preprocessing_artifact_dir: Path | str, output_path: Path | str,
               threshold: float = 0.5, run_id: str = "score",
-              splits: Sequence[str] = DEFAULT_SCORE_SPLITS) -> ScoringReport:
+              splits: Sequence[str] = DEFAULT_SCORE_SPLITS, *,
+              release_id: str | None = None,
+              release_manifest_sha256: str | None = None,
+              target_alert_fraction: float | None = None) -> ScoringReport:
         """Score the requested splits and atomically publish the batch.
 
         `output_path` is the published `predictions.parquet` path; its parent
@@ -134,7 +137,7 @@ class BatchScorer:
         if batch_dir.exists():
             raise FileExistsError(f"prediction_batch_run_id_exists:{run_id}")
         model = load_scoring_model(model_path, snapshot_path, preprocessing_artifact_dir)
-        snapshot_splits = load_snapshot_splits(snapshot_path)
+        snapshot_splits = load_snapshot_partitions(snapshot_path, requested_splits)
         for split_name in requested_splits:
             if snapshot_splits.frame(split_name).empty:
                 raise ValueError(f"empty_split:{split_name}")
@@ -150,6 +153,9 @@ class BatchScorer:
             # identical matrix the model consumes; predict_positive_proba runs
             # the same deterministic transform internally.
             matrix = model.transform(prepared.X)
+            explanation_batch = model.explain_many(matrix) if hasattr(model, "explain_many") else None
+            if explanation_batch is not None and explanation_batch.values.shape != matrix.shape:
+                raise ValueError("scoring_explanation_shape_mismatch")
             probabilities = model.predict_positive_proba(prepared.X)
             insufficient = prepared.X["insufficient_data"].to_numpy(dtype=bool)
             # Cột thống kê GỐC (chưa transform) — đi thẳng vào features_json.
@@ -180,7 +186,10 @@ class BatchScorer:
                     model_version=model_version,
                     snapshot_version=snapshot_splits.snapshot_version,
                     cutoff_day=cutoff_day,
-                    top_signals=self.explain(model, matrix[index]),
+                    top_signals=(
+                        _top_signals(explanation_batch.feature_names, explanation_batch.values[index])
+                        if explanation_batch is not None else model.explain(matrix[index])
+                    ),
                     review_reason=_REVIEW_REASONS[status],
                     features=_features_json_values(stats_frame.iloc[index]),
                 ))
@@ -188,6 +197,22 @@ class BatchScorer:
 
         frame = _records_frame(records, id_students).sort_values(list(KEYS), kind="mergesort").reset_index(drop=True)
         frame = frame.drop(columns=["id_student"])
+        raw_positive_count = int(np.count_nonzero(
+            frame["risk_score"].to_numpy(dtype=np.float64) >= threshold
+        ))
+        raw_positive_rate = raw_positive_count / len(frame) if len(frame) else 0.0
+        labeled_positive_count = int((frame["predicted_label"] == 1).sum())
+        scored_alert_count = int((
+            (frame["status"] == PredictionStatus.SCORED.value)
+            & (frame["predicted_label"] == 1)
+        ).sum())
+        drift_status: str | None = None
+        if target_alert_fraction is not None:
+            deviation = abs(raw_positive_rate - float(target_alert_fraction))
+            drift_status = (
+                "critical_requires_review" if deviation > 0.10 else
+                "warning" if deviation > 0.05 else "ok"
+            )
 
         batch_dir.parent.mkdir(parents=True, exist_ok=True)
         staging = batch_dir.parent / f".{batch_dir.name}.staging-{uuid.uuid4().hex}"
@@ -198,12 +223,41 @@ class BatchScorer:
                 staging / PREDICTIONS_FILENAME, staging / MANIFEST_FILENAME,
                 run_id, snapshot_splits.snapshot_version, model_version, cutoff_day,
             )
-            (staging / SUCCESS_FILENAME).write_text(json.dumps({
+            release_provenance_sha256: str | None = None
+            if release_id is not None:
+                if not release_manifest_sha256 or len(release_manifest_sha256) != 64:
+                    raise ValueError("scoring_release_manifest_hash_invalid")
+                provenance_path = staging / "release.provenance.json"
+                provenance_path.write_text(json.dumps({
+                    "release_id": release_id,
+                    "release_manifest_sha256": release_manifest_sha256,
+                    "production_threshold": threshold,
+                    "target_alert_fraction": target_alert_fraction,
+                    "raw_threshold_positive_count": raw_positive_count,
+                    "raw_threshold_positive_rate": raw_positive_rate,
+                    "labeled_positive_count": labeled_positive_count,
+                    "scored_alert_count": scored_alert_count,
+                    "manual_review_count": int((
+                        frame["status"] == PredictionStatus.MANUAL_REVIEW.value
+                    ).sum()),
+                    "insufficient_data_count": int((
+                        frame["status"] == PredictionStatus.INSUFFICIENT_DATA.value
+                    ).sum()),
+                    "alert_rate_drift_status": drift_status,
+                    "monitoring_only": True,
+                }, indent=2, sort_keys=True))
+                release_provenance_sha256 = _file_hash(provenance_path)
+            success_payload: dict[str, object] = {
                 "schema_version": PREDICTION_BATCH_SCHEMA_VERSION,
                 "run_id": run_id,
                 "manifest_sha256": _file_hash(staging / MANIFEST_FILENAME),
                 "predictions_sha256": manifest.predictions_sha256,
-            }, indent=2, sort_keys=True))
+            }
+            if release_provenance_sha256 is not None:
+                success_payload["release_provenance_sha256"] = release_provenance_sha256
+            (staging / SUCCESS_FILENAME).write_text(json.dumps(
+                success_payload, indent=2, sort_keys=True,
+            ))
             if batch_dir.exists():
                 raise FileExistsError(f"prediction_batch_run_id_exists:{run_id}")
             os.replace(staging, batch_dir)
@@ -224,6 +278,12 @@ class BatchScorer:
             batch_dir=batch_dir,
             threshold=threshold,
             no_prediction_rows=counts[PredictionStatus.NO_PREDICTION],
+            release_id=release_id,
+            raw_threshold_positive_count=raw_positive_count,
+            raw_threshold_positive_rate=raw_positive_rate,
+            labeled_positive_count=labeled_positive_count,
+            scored_alert_count=scored_alert_count,
+            alert_rate_drift_status=drift_status,
         )
 
     def explain(self, model: ScoringModel, feature_row: np.ndarray) -> list[PredictionSignal]:
@@ -267,6 +327,12 @@ class ScoringReport:
     # scoring itself never writes the DB, so the default reflects "no DSN".
     database_write: str = "skipped_no_dsn"
     database_rows: int | None = None
+    release_id: str | None = None
+    raw_threshold_positive_count: int | None = None
+    raw_threshold_positive_rate: float | None = None
+    labeled_positive_count: int | None = None
+    scored_alert_count: int | None = None
+    alert_rate_drift_status: str | None = None
 
 
 def score_snapshot(snapshot_path: Path | str, model_path: Path | str,
@@ -277,6 +343,44 @@ def score_snapshot(snapshot_path: Path | str, model_path: Path | str,
     return BatchScorer().score(
         snapshot_path, model_path, preprocessing_artifact_dir,
         output_path, threshold, run_id, splits,
+    )
+
+
+def score_release_snapshot(
+    snapshot_path: Path | str,
+    release_artifact_dir: Path | str,
+    output_path: Path | str,
+    run_id: str,
+    splits: Sequence[str],
+) -> ScoringReport:
+    """Score with a verified immutable release and its locked threshold."""
+    from learnguard.ml.release import load_and_verify_model_release
+
+    requested = _validate_splits(splits)
+    release = load_and_verify_model_release(release_artifact_dir, snapshot_path)
+    if (
+        release.holdout_access_policy == "forbidden_prior_consumed"
+        and "holdout" in requested
+    ):
+        raise ValueError("scoring_release_holdout_forbidden")
+    target_fraction = release.manifest.get("target_alert_fraction")
+    if (
+        isinstance(target_fraction, bool)
+        or not isinstance(target_fraction, (int, float))
+    ):
+        raise ValueError("scoring_release_alert_fraction_invalid")
+    manifest_path = Path(release_artifact_dir) / "release.manifest.json"
+    return BatchScorer().score(
+        snapshot_path,
+        release.model_artifact_dir,
+        release.preprocessing_artifact_dir,
+        output_path,
+        release.production_threshold,
+        run_id,
+        requested,
+        release_id=release.release_id,
+        release_manifest_sha256=_file_hash(manifest_path),
+        target_alert_fraction=float(target_fraction),
     )
 
 
@@ -297,6 +401,22 @@ def _validate_threshold(threshold: float) -> float:
     if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not 0.0 <= float(threshold) <= 1.0:
         raise ValueError("scoring_threshold_out_of_range")
     return float(threshold)
+
+
+def _top_signals(feature_names: Sequence[str], contributions: np.ndarray) -> list[PredictionSignal]:
+    values = np.asarray(contributions, dtype=np.float64)
+    if values.ndim != 1 or len(feature_names) != values.size or not np.isfinite(values).all():
+        raise ValueError("scoring_explanation_invalid")
+    order = np.argsort(-np.abs(values), kind="stable")[:TOP_SIGNAL_COUNT]
+    return [
+        PredictionSignal(
+            feature_name=str(feature_names[index]),
+            contribution=float(values[index]),
+            direction=("increases_risk" if values[index] > 0 else
+                       "decreases_risk" if values[index] < 0 else "neutral"),
+        )
+        for index in order
+    ]
 
 
 def _pseudonymous_key(code_module: str, code_presentation: str, id_student: object) -> str:

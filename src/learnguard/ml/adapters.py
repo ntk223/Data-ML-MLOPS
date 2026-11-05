@@ -9,22 +9,23 @@ and registering it in `MODEL_TYPE_BUILDERS`; nothing downstream changes.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Mapping
 
 import numpy as np
 import pandas as pd
 
 from learnguard.ml.contracts import PredictionSignal
-from learnguard.ml.model_interface import TOP_SIGNAL_COUNT
+from learnguard.ml.model_interface import ExplanationBatch, TOP_SIGNAL_COUNT
 from learnguard.ml.training import (
+    LEGACY_MODEL_ARTIFACT_SCHEMA_VERSION,
     MODEL_ARTIFACT_SCHEMA_VERSION,
+    SHAP_BACKGROUND_FILENAME,
     LoadedLogisticBaseline,
     load_logistic_model_artifact,
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from learnguard.ml.model_interface import ScoringModel
 
 LOGISTIC_MODEL_TYPE = "sklearn.linear_model.LogisticRegression"
@@ -78,6 +79,8 @@ class LogisticScoringModel:
         names = [str(name) for name in self.feature_names]
         if len(names) != values.size:
             raise ValueError("scoring_explain_feature_names_mismatch")
+        # Keep this single-row API backward compatible. New scoring uses the
+        # vectorized SHAP API below, which applies the train-background shift.
         contributions = coefficients[0] * values
         order = np.argsort(-np.abs(contributions), kind="stable")[:TOP_SIGNAL_COUNT]
         return [
@@ -89,16 +92,62 @@ class LogisticScoringModel:
             for index in order
         ]
 
+    def explain_many(self, feature_matrix: np.ndarray) -> ExplanationBatch:
+        matrix = np.ascontiguousarray(feature_matrix, dtype=np.float64)
+        if matrix.ndim != 2 or matrix.shape[1] != len(self.feature_names):
+            raise ValueError("scoring_explain_matrix_invalid")
+        schema = str(self._baseline.manifest["schema_version"])
+        model = self._baseline._model
+        if schema == MODEL_ARTIFACT_SCHEMA_VERSION:
+            root = self._baseline.manifest.get("artifact_dir")
+            if not isinstance(root, str):
+                raise ValueError("model_artifact_dir_missing")
+            with np.load(Path(root) / SHAP_BACKGROUND_FILENAME) as data:
+                mean = np.asarray(data["mean"], dtype=np.float64)
+                covariance = np.asarray(data["covariance"], dtype=np.float64)
+            try:
+                import shap
+            except ModuleNotFoundError:
+                # Exact interventional Linear SHAP identity. This is not the
+                # legacy coef*x contribution: the train background is removed.
+                values = (matrix - mean) * np.asarray(model.coef_[0], dtype=np.float64)
+                expected = float(model.intercept_[0] + np.dot(mean, model.coef_[0]))
+                method = "linear-shap-interventional-exact-v1"
+            else:
+                explainer = shap.LinearExplainer(
+                    model, (mean, covariance), feature_perturbation="interventional",
+                )
+                values = np.asarray(explainer.shap_values(matrix), dtype=np.float64)
+                expected = float(explainer.expected_value)
+                method = "linear-shap-interventional-v1"
+        else:
+            values = matrix * np.asarray(model.coef_[0], dtype=np.float64)
+            expected = float(model.intercept_[0])
+            method = "legacy-linear-contribution"
+        outputs = np.asarray(model.decision_function(matrix), dtype=np.float64)
+        return ExplanationBatch(
+            values=values,
+            expected_value=expected,
+            output_values=outputs,
+            feature_names=self.feature_names,
+            method=method,
+            output_space="log_odds",
+        )
+
 
 def load_logistic_scoring_model(manifest: dict[str, object], model_artifact_dir: Path | str,
                                 snapshot_path: Path | str,
                                 preprocessing_artifact_dir: Path | str) -> LogisticScoringModel:
     """Route entry for logistic artifacts: validate schema, load, and wrap."""
-    if manifest.get("schema_version") != MODEL_ARTIFACT_SCHEMA_VERSION:
+    if manifest.get("schema_version") not in {
+        LEGACY_MODEL_ARTIFACT_SCHEMA_VERSION, MODEL_ARTIFACT_SCHEMA_VERSION,
+    }:
         raise ValueError(f"unsupported_model_schema_version:{manifest.get('schema_version')}")
-    return LogisticScoringModel(
-        load_logistic_model_artifact(model_artifact_dir, snapshot_path, preprocessing_artifact_dir)
+    baseline = load_logistic_model_artifact(
+        model_artifact_dir, snapshot_path, preprocessing_artifact_dir,
     )
+    baseline._manifest["artifact_dir"] = str(Path(model_artifact_dir).resolve())
+    return LogisticScoringModel(baseline)
 
 
 MODEL_TYPE_BUILDERS: dict[str, Callable[[dict[str, object], Path | str, Path | str, Path | str], ScoringModel]] = {

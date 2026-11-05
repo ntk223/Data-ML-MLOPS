@@ -38,7 +38,9 @@ def test_fixed_estimator_contract():
 def test_train_and_verify_round_trip(model_run):
     _, snapshot, preprocessor, result = model_run
     assert result.status == "ok"
-    assert len(result.published_paths) == 4
+    assert len(result.published_paths) == 5
+    assert result.artifact_dir / "shap_background.npz" in result.published_paths
+    assert all(path.is_file() for path in result.published_paths)
     report = verify_logistic_model_artifact(
         result.artifact_dir, snapshot, preprocessor.artifact_dir
     )
@@ -74,7 +76,10 @@ def test_identical_runs_are_semantically_equal(model_run):
         assert left[field] == right[field]
 
 
-@pytest.mark.parametrize("filename", ["model.joblib", "model.manifest.json", "model.training-report.json"])
+@pytest.mark.parametrize("filename", [
+    "model.joblib", "shap_background.npz", "model.manifest.json",
+    "model.training-report.json",
+])
 def test_tampering_is_rejected(model_run, tmp_path, filename):
     _, snapshot, preprocessor, result = model_run
     copied = tmp_path / "tampered"
