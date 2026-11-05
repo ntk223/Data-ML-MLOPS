@@ -274,7 +274,9 @@ def _rows_for_write(frame: pd.DataFrame, run_id: str) -> list[dict[str, object]]
 
 
 def _text(value: object) -> str | None:
-    if value is None or value is pd.NA:
+    # NaN float (np.nan/float('nan')) phải map về NULL — str(nan) cho ra chuỗi
+    # 'nan' rác trong DB (bug thật: 13,295 dòng scored bị dính).
+    if value is None or pd.isna(value):
         return None
     return str(value)
 

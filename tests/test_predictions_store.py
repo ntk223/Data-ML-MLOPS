@@ -9,6 +9,7 @@ import json
 import uuid
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -315,6 +316,18 @@ def test_cli_score_writes_predictions_to_postgres(model_run, capsys):
     finally:
         store.drop_table()
         store.close()
+
+
+def test_text_coerces_nan_to_null_no_db():
+    """Hồi quy: NaN (float/np) phải thành NULL trong DB, không phải chuỗi 'nan'."""
+    from learnguard.ml.predictions_store import _text
+
+    assert _text(None) is None
+    assert _text(pd.NA) is None
+    assert _text(float("nan")) is None
+    assert _text(np.nan) is None
+    assert _text("high_uncertainty") == "high_uncertainty"
+    assert _text("") == ""
 
 
 def test_cli_score_without_dsn_skips_database_write(model_run, capsys, monkeypatch):
