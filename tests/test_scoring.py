@@ -12,6 +12,7 @@ import pytest
 from learnguard.cli import build_parser, main
 from learnguard.data.features import KEYS
 from learnguard.data.loading import SPLITS, load_snapshot_splits
+from learnguard.ml.scoring import STATS_FEATURE_COLUMNS
 from learnguard.ml.contracts import load_prediction_batch_manifest
 from learnguard.ml.preprocessing import _file_hash, _prepare_split
 from learnguard.ml.scoring import (
@@ -78,6 +79,30 @@ def test_score_round_trip_publishes_verified_batch(score_run):
     assert manifest.row_count == len(predictions) == expected_rows
     assert list(predictions.columns) == list(PREDICTION_COLUMNS)
     assert set(predictions["split"]) == set(SPLITS)
+
+
+def test_features_json_carries_raw_stats_without_demographics(score_run):
+    """features_json phải chứa đúng cột thống kê GỐC, không có demographics."""
+    _, snapshot, _, _, report = score_run
+    predictions = pd.read_parquet(report.output_path)
+    assert "features_json" in predictions.columns
+    splits = load_snapshot_splits(snapshot)
+    holdout = splits.frame("holdout").sort_values(list(KEYS)).reset_index(drop=True)
+    rows = predictions[predictions["split"] == "holdout"].sort_values(
+        ["code_module", "code_presentation", "student_key"]
+    ).reset_index(drop=True)
+    for name in STATS_FEATURE_COLUMNS:
+        features = json.loads(rows.loc[0, "features_json"])
+        assert name in features
+        if holdout.loc[0, name] is None or pd.isna(holdout.loc[0, name]):
+            assert features[name] is None
+        else:
+            assert features[name] == float(holdout.loc[0, name])
+    # Ranh giới PII: demographics không bao giờ rời snapshot.
+    features = json.loads(rows.loc[0, "features_json"])
+    for banned in ("gender", "region", "highest_education", "imd_band",
+                   "age_band", "disability"):
+        assert banned not in features
 
 
 def test_pseudonymous_key_is_deterministic_and_non_identifying(score_run):

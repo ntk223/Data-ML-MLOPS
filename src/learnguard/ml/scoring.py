@@ -66,6 +66,9 @@ class PredictionRecord:
     top_signals: list[PredictionSignal] = field(default_factory=list)
     review_reason: str | None = None
     split: str = ""
+    # Thống kê hành vi/học thuật GỐC của SV tại cutoff (không demographics —
+    # quyết định PII: gender/region/disability/imd_band… không rời snapshot).
+    features: dict[str, float | None] = field(default_factory=dict)
 
 HIGH_UNCERTAINTY_THRESHOLD = 0.8
 PREDICTIONS_FILENAME = "predictions.parquet"
@@ -80,6 +83,19 @@ PREDICTION_COLUMNS: tuple[str, ...] = (
     "student_key", "code_module", "code_presentation", "split", "risk_score",
     "predicted_label", "threshold", "uncertainty", "status", "review_reason",
     "model_version", "snapshot_version", "cutoff_day", "top_signals_json",
+    "features_json",
+)
+
+# Cột thống kê đưa vào `features_json`: hành vi học tập + học thuật. Cố ý
+# LOẠI demographics (gender/region/highest_education/imd_band/age_band/
+# disability) — giữ ranh giới PII đã chốt; demographics ở lại trong snapshot.
+STATS_FEATURE_COLUMNS: tuple[str, ...] = (
+    "n_clicks_before_cutoff",
+    "click_trend_w3_w4",
+    "n_submitted_before_cutoff",
+    "avg_score_submitted",
+    "num_of_prev_attempts",
+    "studied_credits",
 )
 
 _REVIEW_REASONS: dict[PredictionStatus, str | None] = {
@@ -136,6 +152,8 @@ class BatchScorer:
             matrix = model.transform(prepared.X)
             probabilities = model.predict_positive_proba(prepared.X)
             insufficient = prepared.X["insufficient_data"].to_numpy(dtype=bool)
+            # Cột thống kê GỐC (chưa transform) — đi thẳng vào features_json.
+            stats_frame = prepared.X.loc[:, STATS_FEATURE_COLUMNS]
             modules = prepared.keys["code_module"].tolist()
             presentations = prepared.keys["code_presentation"].tolist()
             students = prepared.keys["id_student"].tolist()
@@ -164,6 +182,7 @@ class BatchScorer:
                     cutoff_day=cutoff_day,
                     top_signals=self.explain(model, matrix[index]),
                     review_reason=_REVIEW_REASONS[status],
+                    features=_features_json_values(stats_frame.iloc[index]),
                 ))
                 id_students.append(students[index])
 
@@ -296,6 +315,22 @@ def _ledger_cutoff_day(snapshot_path: Path) -> int:
     return value
 
 
+def _features_json_values(row: "pd.Series") -> dict[str, float | None]:
+    """Giá trị GỐC của các cột thống kê cho 1 dòng snapshot.
+
+    NaN → None (null trong JSON) — thống nhất với quy ước NULL của
+    predictions_store; số được chuẩn về float Python gốc (parquet/JSON an toàn).
+    """
+    values: dict[str, float | None] = {}
+    for name in STATS_FEATURE_COLUMNS:
+        value = row[name]
+        if value is None or pd.isna(value):
+            values[name] = None
+        else:
+            values[name] = float(value)
+    return values
+
+
 def _records_frame(records: Sequence[PredictionRecord],
                    id_students: Sequence[object]) -> pd.DataFrame:
     """Materialize records into one frame; `id_student` is kept ONLY to sort
@@ -323,6 +358,11 @@ def _records_frame(records: Sequence[PredictionRecord],
                   "direction": signal.direction} for signal in record.top_signals],
                 separators=(",", ":"), sort_keys=True,
             )
+            for record in records
+        ],
+        "features_json": [
+            json.dumps(record.features, separators=(",", ":"), sort_keys=True,
+                       allow_nan=False)
             for record in records
         ],
     })

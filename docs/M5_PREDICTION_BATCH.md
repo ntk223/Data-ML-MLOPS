@@ -8,7 +8,7 @@
 
 ```text
 artifacts/prediction-batches/<run-id>/
-├── predictions.parquet   # 14 cột, payload
+├── predictions.parquet   # 15 cột, payload
 ├── manifest.json         # prediction-batch.v1 — 9 trường
 └── success.json          # {schema_version, run_id, manifest_sha256, predictions_sha256}
 ```
@@ -45,7 +45,8 @@ student_key = sha256( "learnguard:prediction-batch.v1:{code_module}:{code_presen
 
 - **Bảng:** `ml_predictions` — **sở hữu ghi: ml-data**; backend chỉ SELECT.
 - **PK:** `(code_module, code_presentation, student_key)` — mỗi SV 1 dòng/1 lớp học phần, **luôn là dự đoán mới nhất** (run mới upsert đè run cũ). Không cần JOIN "batch mới nhất".
-- **Cột:** `student_key CHAR(16)`, `code_module`, `code_presentation`, `split`, `risk_score` (float8), `predicted_label` (smallint, NULL khi không gán nhãn), `threshold`, `uncertainty`, `status`, `review_reason`, `model_version`, `snapshot_version`, `cutoff_day`, `top_signals_json` (text), `run_id`, `scored_at` (timestamptz).
+- **Cột:** `student_key CHAR(16)`, `code_module`, `code_presentation`, `split`, `risk_score` (float8), `predicted_label` (smallint, NULL khi không gán nhãn), `threshold`, `uncertainty`, `status`, `review_reason`, `model_version`, `snapshot_version`, `cutoff_day`, `top_signals_json` (text), `features_json` (text), `run_id`, `scored_at` (timestamptz).
+- **`features_json` (mới):** JSON object `{"tên_cột": giá trị_gốc | null}` với đúng 6 cột thống kê **hành vi/học thuật** tại cutoff: `n_clicks_before_cutoff`, `click_trend_w3_w4`, `n_submitted_before_cutoff`, `avg_score_submitted`, `num_of_prev_attempts`, `studied_credits`. Giá trị là GỐC (chưa qua preprocessing) — dùng hiển thị thống kê cho cố vấn. **Cố ý không chứa demographics** (gender/region/highest_education/imd_band/age_band/disability) — ranh giới PII; demographics chỉ tồn tại trong snapshot. Bảng `ml_predictions` có sẵn migration tại chỗ (`ALTER TABLE … ADD COLUMN IF NOT EXISTS`) qua `ensure_schema()`.
 - **`status`:** `scored` / `manual_review` / `insufficient_data` / `no_prediction` — backend PHẢI xử lý đủ 4.
 - **Index sẵn có:** `(status)`, `(model_version)`.
 - **Versioning:** đổi schema = breaking change — ml-data thông báo trước, backend đồng bộ.

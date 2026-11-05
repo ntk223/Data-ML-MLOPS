@@ -227,6 +227,22 @@ def test_write_rolls_back_on_bad_row(store):
     assert store.count_run("run-1") == len(frame)  # earlier rows intact
 
 
+def test_features_json_round_trip(store):
+    """features_json phải lên DB nguyên vẹn (JSON text) qua upsert."""
+    frame = _sample_frame()
+    frame["features_json"] = json.dumps(
+        {"avg_score_submitted": 45.5, "n_clicks_before_cutoff": 120.0,
+         "studied_credits": 60.0}, separators=(",", ":"), sort_keys=True,
+    )
+    store.write_predictions(frame, "run-features")
+    stored = store.fetch_predictions()
+    assert len(stored) == len(frame)
+    for value in stored["features_json"]:
+        features = json.loads(value)
+        assert features["avg_score_submitted"] == 45.5
+        assert features["n_clicks_before_cutoff"] == 120.0
+
+
 def test_write_rejects_wrong_columns(store):
     frame = _sample_frame().drop(columns=["uncertainty"])
     with pytest.raises(ValueError, match="prediction_store_columns_invalid"):

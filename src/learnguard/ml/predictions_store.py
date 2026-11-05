@@ -41,7 +41,7 @@ _TABLE_COLUMNS: tuple[str, ...] = (
     "student_key", "code_module", "code_presentation", "split",
     "risk_score", "predicted_label", "threshold", "uncertainty",
     "status", "review_reason", "model_version", "snapshot_version",
-    "cutoff_day", "top_signals_json", "run_id", "scored_at",
+    "cutoff_day", "top_signals_json", "features_json", "run_id", "scored_at",
 )
 
 _UPSERT_STATEMENT = """
@@ -49,12 +49,12 @@ INSERT INTO {table} (
     student_key, code_module, code_presentation, split,
     risk_score, predicted_label, threshold, uncertainty,
     status, review_reason, model_version, snapshot_version,
-    cutoff_day, top_signals_json, run_id
+    cutoff_day, top_signals_json, features_json, run_id
 ) VALUES (
     :student_key, :code_module, :code_presentation, :split,
     :risk_score, :predicted_label, :threshold, :uncertainty,
     :status, :review_reason, :model_version, :snapshot_version,
-    :cutoff_day, :top_signals_json, :run_id
+    :cutoff_day, :top_signals_json, :features_json, :run_id
 )
 ON CONFLICT (code_module, code_presentation, student_key) DO UPDATE SET
     split = EXCLUDED.split,
@@ -68,6 +68,7 @@ ON CONFLICT (code_module, code_presentation, student_key) DO UPDATE SET
     snapshot_version = EXCLUDED.snapshot_version,
     cutoff_day = EXCLUDED.cutoff_day,
     top_signals_json = EXCLUDED.top_signals_json,
+    features_json = EXCLUDED.features_json,
     run_id = EXCLUDED.run_id,
     scored_at = now()
 """
@@ -137,6 +138,7 @@ class PredictionStore:
             snapshot_version varchar NOT NULL,
             cutoff_day integer NOT NULL,
             top_signals_json text,
+            features_json text,
             run_id varchar NOT NULL,
             scored_at timestamptz NOT NULL DEFAULT now(),
             PRIMARY KEY (code_module, code_presentation, student_key)
@@ -145,6 +147,11 @@ class PredictionStore:
         try:
             with engine.begin() as connection:
                 connection.execute(text(ddl))
+                # DB cũ (tạo trước khi có features_json) — nâng cấp tại chỗ.
+                connection.execute(text(
+                    f"ALTER TABLE {self._config.table} "
+                    "ADD COLUMN IF NOT EXISTS features_json text"
+                ))
                 connection.execute(text(
                     f"CREATE INDEX IF NOT EXISTS {self._config.table}_status_idx"
                     f" ON {self._config.table} (status)"
@@ -268,6 +275,7 @@ def _rows_for_write(frame: pd.DataFrame, run_id: str) -> list[dict[str, object]]
             "snapshot_version": _text(record["snapshot_version"]),
             "cutoff_day": _int(record["cutoff_day"]),
             "top_signals_json": _signals(record["top_signals_json"]),
+            "features_json": _text(record["features_json"]),
             "run_id": run_id,
         })
     return rows
