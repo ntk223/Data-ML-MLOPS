@@ -262,3 +262,172 @@ def test_cli_score_end_to_end(score_run, capsys):
     summary = json.loads(capsys.readouterr().out)
     assert summary["status"] == "ok"
     assert summary["input_rows"] == score_run[4].input_rows
+
+
+def _subsample_run(model_run, run_id: str, max_students: int, seed: int = 42):
+    """Score once with --max-students semantics into its own batch directory.
+
+    Subsample requires exactly one split, so these runs score the validation
+    split only (the intended production use case).
+    """
+    _, snapshot, preprocessor, model = model_run
+    batch_dir = model_run[0] / "artifacts" / "prediction-batches" / run_id
+    return score_snapshot(
+        snapshot, model.artifact_dir, preprocessor.artifact_dir,
+        batch_dir / "predictions.parquet", 0.5, run_id,
+        splits=("validation",),
+        max_students=max_students, seed=seed,
+    )
+
+
+def test_subsample_same_seed_is_reproducible(model_run):
+    """Same seed → cùng tập student_key qua 2 lần chạy độc lập."""
+    first = _subsample_run(model_run, "sub-seed-a", 1, seed=42)
+    second = _subsample_run(model_run, "sub-seed-b", 1, seed=42)
+    keys_first = sorted(pd.read_parquet(first.output_path)["student_key"].unique())
+    keys_second = sorted(pd.read_parquet(second.output_path)["student_key"].unique())
+    assert keys_first == keys_second
+
+
+def test_subsample_selects_exactly_n_or_all_students(model_run, score_run):
+    """N < tổng → đúng N student unique; N > tổng → giữ nguyên toàn bộ."""
+    full = pd.read_parquet(score_run[4].output_path)
+    full = full[full["split"] == "validation"]
+    total_students = int(full["student_key"].nunique())
+    assert total_students > 1
+
+    narrowed = _subsample_run(model_run, "sub-narrow", 1)
+    narrowed_frame = pd.read_parquet(narrowed.output_path)
+    assert narrowed_frame["student_key"].nunique() == 1
+    assert narrowed_frame["student_key"].nunique() < total_students
+
+    widened = _subsample_run(model_run, "sub-wide", total_students * 10)
+    widened_frame = pd.read_parquet(widened.output_path)
+    assert widened_frame["student_key"].nunique() == total_students
+    assert len(widened_frame) == len(full)
+
+
+def test_subsample_keeps_every_row_of_selected_students(model_run, score_run):
+    """Mọi dòng prediction của student được chọn phải được giữ nguyên."""
+    full = pd.read_parquet(score_run[4].output_path)
+    full = full[full["split"] == "validation"]
+    subsampled = pd.read_parquet(_subsample_run(model_run, "sub-rows", 1).output_path)
+    full_counts = full.groupby("student_key").size()
+    sub_counts = subsampled.groupby("student_key").size()
+    assert set(sub_counts.index).issubset(set(full_counts.index))
+    for student_key, count in sub_counts.items():
+        assert count == full_counts[student_key]
+    # Không có dòng nào ngoài các student được chọn.
+    assert len(subsampled) == int(sub_counts.sum())
+
+
+def test_subsample_manifest_records_audit_fields(model_run, score_run):
+    """Manifest phải ghi lại đủ provenance subsample phục vụ audit."""
+    full = pd.read_parquet(score_run[4].output_path)
+    full = full[full["split"] == "validation"]
+    report = _subsample_run(model_run, "sub-manifest", 1, seed=42)
+    manifest = json.loads((report.batch_dir / "manifest.json").read_text())
+    assert manifest["subsample"] == {
+        "max_students": 1,
+        "seed": 42,
+        "n_students_before": int(full["student_key"].nunique()),
+        "n_students_after": 1,
+        "n_rows_after": int(len(pd.read_parquet(report.output_path))),
+    }
+    # Reader chuẩn vẫn đọc được manifest (bỏ qua trường lạ) và khớp payload.
+    loaded = load_prediction_batch_manifest(report.batch_dir / "manifest.json")
+    assert loaded.row_count == manifest["row_count"]
+
+
+def test_without_max_students_manifest_has_no_subsample(score_run):
+    """Không set --max-students → hành vi y như cũ (backward compat)."""
+    report = score_run[4]
+    manifest = json.loads((report.batch_dir / "manifest.json").read_text())
+    assert "subsample" not in manifest
+
+
+@pytest.mark.parametrize("splits", [None, ("train", "validation")])
+def test_max_students_requires_single_split(model_run, splits):
+    """--max-students chỉ hợp lệ với đúng 1 split (0 hoặc ≥2 split bị từ chối)."""
+    _, snapshot, preprocessor, model = model_run
+    batch_dir = model_run[0] / "artifacts" / "prediction-batches" / "sub-bad-split"
+    with pytest.raises(ValueError, match="max_students_requires_single_split"):
+        score_snapshot(
+            snapshot, model.artifact_dir, preprocessor.artifact_dir,
+            batch_dir / "predictions.parquet", 0.5, "sub-bad-split",
+            splits=splits, max_students=5,
+        )
+    assert not batch_dir.exists()
+
+
+def test_max_students_must_be_positive(model_run):
+    _, snapshot, preprocessor, model = model_run
+    batch_dir = model_run[0] / "artifacts" / "prediction-batches" / "sub-zero"
+    with pytest.raises(ValueError, match="max_students_invalid"):
+        score_snapshot(
+            snapshot, model.artifact_dir, preprocessor.artifact_dir,
+            batch_dir / "predictions.parquet", 0.5, "sub-zero",
+            splits=("validation",), max_students=0,
+        )
+    assert not batch_dir.exists()
+
+
+def test_max_students_forbidden_in_release_mode(model_run):
+    """Release mode phải tái lập nguyên vẹn — subsample bị từ chối."""
+    _, snapshot, preprocessor, model = model_run
+    batch_dir = model_run[0] / "artifacts" / "prediction-batches" / "sub-release"
+    with pytest.raises(ValueError, match="max_students_release_mode_forbidden"):
+        BatchScorer().score(
+            snapshot, model.artifact_dir, preprocessor.artifact_dir,
+            batch_dir / "predictions.parquet", 0.5, "sub-release",
+            splits=("validation",),
+            release_id="rel-1", release_manifest_sha256="a" * 64,
+            max_students=5,
+        )
+    assert not batch_dir.exists()
+
+
+def test_cli_rejects_max_students_in_release_mode(score_run):
+    _, snapshot, _, _, _ = score_run
+    code = main([
+        "ml", "score", "--snapshot", str(snapshot),
+        "--release-artifact-dir", str(score_run[0] / "artifacts" / "no-release"),
+        "--artifacts-dir", str(score_run[0] / "artifacts"),
+        "--run-id", "sub-release-cli",
+        "--split", "validation", "--max-students", "5",
+    ])
+    assert code == 2
+
+
+def test_cli_score_parses_subsample_args():
+    parser = build_parser()
+    args = parser.parse_args([
+        "ml", "score", "--snapshot", "snapshot.parquet",
+        "--model-artifact-dir", "model", "--preprocessing-artifact-dir", "pre",
+        "--run-id", "score-2", "--split", "validation",
+        "--max-students", "300", "--seed", "7",
+    ])
+    assert args.max_students == 300
+    assert args.seed == 7
+
+
+def test_cli_score_end_to_end_with_subsample(score_run, capsys):
+    """CLI subsample: publish file đã subsample, exit 0, audit manifest."""
+    _, snapshot, preprocessor, model, _ = score_run
+    code = main([
+        "ml", "score", "--snapshot", str(snapshot),
+        "--model-artifact-dir", str(model.artifact_dir),
+        "--preprocessing-artifact-dir", str(preprocessor.artifact_dir),
+        "--artifacts-dir", str(score_run[0] / "artifacts"), "--run-id", "score-cli-sub",
+        "--split", "validation", "--max-students", "1", "--seed", "42",
+    ])
+    assert code == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["status"] == "ok"
+    batch_dir = score_run[0] / "artifacts" / "prediction-batches" / "score-cli-sub"
+    manifest = json.loads((batch_dir / "manifest.json").read_text())
+    assert manifest["subsample"]["max_students"] == 1
+    assert manifest["subsample"]["n_students_after"] == 1
+    assert manifest["subsample"]["n_rows_after"] == manifest["row_count"]
+    predictions = pd.read_parquet(batch_dir / "predictions.parquet")
+    assert predictions["student_key"].nunique() == 1

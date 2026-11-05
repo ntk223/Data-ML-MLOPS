@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
 import uuid
 from dataclasses import dataclass, field
@@ -117,7 +118,9 @@ class BatchScorer:
               splits: Sequence[str] = DEFAULT_SCORE_SPLITS, *,
               release_id: str | None = None,
               release_manifest_sha256: str | None = None,
-              target_alert_fraction: float | None = None) -> ScoringReport:
+              target_alert_fraction: float | None = None,
+              max_students: int | None = None,
+              seed: int = 42) -> ScoringReport:
         """Score the requested splits and atomically publish the batch.
 
         `output_path` is the published `predictions.parquet` path; its parent
@@ -127,12 +130,17 @@ class BatchScorer:
         exactly the value written to the parquet so backend consumers can
         recompute it as `risk_score >= threshold`. `splits` selects which
         snapshot splits enter the batch (default: train, validation, holdout).
+        `max_students` deterministically keeps only N students (unique
+        `student_key`, sampled from the SORTED key list with `seed`) BEFORE
+        publish; it requires exactly one split and is forbidden in release
+        mode — see `_validate_max_students`.
         """
         snapshot_path = Path(snapshot_path)
         output_path = Path(output_path)
         run_id = _validate_run_id(run_id)
         threshold = _validate_threshold(threshold)
         requested_splits = _validate_splits(DEFAULT_SCORE_SPLITS if splits is None else splits)
+        max_students = _validate_max_students(max_students, requested_splits, release_id)
         batch_dir = output_path.parent
         if batch_dir.exists():
             raise FileExistsError(f"prediction_batch_run_id_exists:{run_id}")
@@ -197,6 +205,11 @@ class BatchScorer:
 
         frame = _records_frame(records, id_students).sort_values(list(KEYS), kind="mergesort").reset_index(drop=True)
         frame = frame.drop(columns=["id_student"])
+        # Subsample seed-hoá chạy TRƯỚC publish: mọi số liệu downstream
+        # (row_count, positive counts, manifest) phản ánh đúng file đã xuất.
+        subsample: dict[str, int] | None = None
+        if max_students is not None:
+            frame, subsample = _subsample_frame(frame, max_students, seed)
         raw_positive_count = int(np.count_nonzero(
             frame["risk_score"].to_numpy(dtype=np.float64) >= threshold
         ))
@@ -223,6 +236,16 @@ class BatchScorer:
                 staging / PREDICTIONS_FILENAME, staging / MANIFEST_FILENAME,
                 run_id, snapshot_splits.snapshot_version, model_version, cutoff_day,
             )
+            if subsample is not None:
+                # Ghi thêm provenance subsample vào manifest (trước khi
+                # success.json hash nó). `load_prediction_batch_manifest` bỏ qua
+                # các trường lạ, nên batch vẫn đọc được như cũ.
+                manifest_path = staging / MANIFEST_FILENAME
+                manifest_payload = json.loads(manifest_path.read_text())
+                manifest_payload["subsample"] = subsample
+                manifest_path.write_text(
+                    json.dumps(manifest_payload, indent=2, sort_keys=True)
+                )
             release_provenance_sha256: str | None = None
             if release_id is not None:
                 if not release_manifest_sha256 or len(release_manifest_sha256) != 64:
@@ -338,11 +361,14 @@ class ScoringReport:
 def score_snapshot(snapshot_path: Path | str, model_path: Path | str,
                    preprocessing_artifact_dir: Path | str, output_path: Path | str,
                    threshold: float = 0.5, run_id: str = "score",
-                   splits: Sequence[str] = DEFAULT_SCORE_SPLITS) -> ScoringReport:
+                   splits: Sequence[str] = DEFAULT_SCORE_SPLITS, *,
+                   max_students: int | None = None,
+                   seed: int = 42) -> ScoringReport:
     """M5 pipeline entry point: score the snapshot and publish the batch."""
     return BatchScorer().score(
         snapshot_path, model_path, preprocessing_artifact_dir,
         output_path, threshold, run_id, splits,
+        max_students=max_students, seed=seed,
     )
 
 
@@ -382,6 +408,46 @@ def score_release_snapshot(
         release_manifest_sha256=_file_hash(manifest_path),
         target_alert_fraction=float(target_fraction),
     )
+
+
+def _validate_max_students(max_students: int | None, splits: Sequence[str],
+                           release_id: str | None) -> int | None:
+    """Ràng buộc cho subsample: int > 0, đúng 1 split, không dùng release mode.
+
+    Release mode phải tái lập nguyên vẹn toàn bộ kỳ — subsample sẽ phá tính
+    reproducible của artifact nên bị từ chối tường minh.
+    """
+    if max_students is None:
+        return None
+    if isinstance(max_students, bool) or not isinstance(max_students, int) or max_students <= 0:
+        raise ValueError("max_students_invalid")
+    if release_id is not None:
+        raise ValueError("max_students_release_mode_forbidden")
+    if len(splits) != 1:
+        raise ValueError("max_students_requires_single_split")
+    return int(max_students)
+
+
+def _subsample_frame(frame: "pd.DataFrame", max_students: int,
+                     seed: int) -> tuple["pd.DataFrame", dict[str, int]]:
+    """Chọn seed-hoá đúng `max_students` student_key và giữ TOÀN BỘ dòng của họ.
+
+    Deterministic: danh sách student_key UNIQUE được SORT tăng dần trước khi
+    `random.Random(seed).sample` chọn (không phụ thuộc thứ tự dòng, không dùng
+    numpy global RNG). Một SV học nhiều module trong cùng kỳ → mọi dòng của
+    các student_key được chọn đều được giữ nguyên để dữ liệu nhất quán theo SV.
+    """
+    unique_keys = sorted(set(frame["student_key"]))
+    n_selected = min(max_students, len(unique_keys))
+    selected = set(random.Random(seed).sample(unique_keys, n_selected))
+    kept = frame[frame["student_key"].isin(selected)].reset_index(drop=True)
+    return kept, {
+        "max_students": max_students,
+        "seed": seed,
+        "n_students_before": len(unique_keys),
+        "n_students_after": n_selected,
+        "n_rows_after": int(len(kept)),
+    }
 
 
 def _validate_splits(splits: Sequence[str]) -> tuple[str, ...]:

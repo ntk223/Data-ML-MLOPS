@@ -59,6 +59,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     score.add_argument("--pg-table", default="ml_predictions",
                        help="prediction store table name (default: ml_predictions)")
+    score.add_argument(
+        "--max-students", type=int, default=None,
+        help=(
+            "deterministic per-student subsample: keep only N students before "
+            "publish (requires exactly one --split; forbidden in release mode)"
+        ),
+    )
+    score.add_argument(
+        "--seed", type=int, default=42,
+        help="seed for --max-students subsampling (default: 42)",
+    )
 
     explain = commands.add_parser("explain-shap", help="publish Linear SHAP artifacts")
     explain.add_argument("--snapshot", type=Path, required=True)
@@ -186,6 +197,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or args.threshold is not None
                 ):
                     raise ValueError("release_score_legacy_arguments_forbidden")
+                if args.max_students is not None:
+                    raise ValueError("max_students_release_mode_forbidden")
                 if not args.split:
                     raise ValueError("release_score_explicit_split_required")
                 from learnguard.ml.scoring import score_release_snapshot
@@ -208,6 +221,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     0.5 if args.threshold is None else args.threshold,
                     args.run_id,
                     splits=_requested_splits(args.split),
+                    max_students=args.max_students,
+                    seed=args.seed,
                 )
             _write_predictions_to_store(result, args)
         elif args.command == "explain-shap":
