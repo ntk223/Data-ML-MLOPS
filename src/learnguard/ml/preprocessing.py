@@ -21,7 +21,12 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import FunctionTransformer, OneHotEncoder, OrdinalEncoder, StandardScaler
 
-from learnguard.data.loading import MODEL_FEATURE_COLUMNS, TARGET_COLUMN, load_snapshot_splits
+from learnguard.data.loading import (
+    MODEL_FEATURE_COLUMNS,
+    TARGET_COLUMN,
+    load_snapshot_partitions,
+    load_snapshot_splits,
+)
 from learnguard.data.features import KEYS, SPLIT_RULES
 
 PREPROCESSOR_SCHEMA_VERSION = "preprocessor-v1"
@@ -292,8 +297,9 @@ def load_preprocessing_artifact(artifact_dir: Path | str, snapshot_path: Path | 
         raise ValueError("preprocessor_artifact_hash_mismatch")
     if manifest.get("verification_sha256") != _file_hash(paths["verification"]) or marker.get("verification_sha256") != _file_hash(paths["verification"]):
         raise ValueError("preprocessor_verification_hash_mismatch")
-    prepared = _prepare_splits(snapshot_path)
-    if manifest.get("train_feature_semantic_hash") != _frame_hash(prepared["train"].keys, prepared["train"].X):
+    selected = load_snapshot_partitions(snapshot_path, ("train",))
+    train = _prepare_split("train", selected.frame("train"))
+    if manifest.get("train_feature_semantic_hash") != _frame_hash(train.keys, train.X):
         raise ValueError("preprocessor_train_feature_hash_mismatch")
     transformer = joblib.load(paths["artifact"])
     names = [str(x) for x in transformer.get_feature_names_out()]

@@ -27,6 +27,7 @@ The `ScoringModel` contract:
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -37,6 +38,18 @@ from learnguard.ml.contracts import PredictionSignal
 
 TOP_SIGNAL_COUNT = 5
 MODEL_MANIFEST_FILENAME = "model.manifest.json"
+
+
+@dataclass(frozen=True)
+class ExplanationBatch:
+    """Vectorized additive explanations in the model's native output space."""
+
+    values: np.ndarray
+    expected_value: float
+    output_values: np.ndarray
+    feature_names: tuple[str, ...]
+    method: str
+    output_space: str
 
 
 @runtime_checkable
@@ -56,6 +69,10 @@ class ScoringModel(Protocol):
 
     def explain(self, feature_row: np.ndarray) -> list[PredictionSignal]:
         """Top signals for ONE transformed row (see module docstring)."""
+        ...
+
+    def explain_many(self, feature_matrix: np.ndarray) -> ExplanationBatch:
+        """Explain a transformed matrix without rebuilding an explainer per row."""
         ...
 
 

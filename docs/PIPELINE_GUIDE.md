@@ -258,6 +258,7 @@ Thay đổi bất kỳ hợp đồng nào (thêm feature, đổi split, đổi c
 | `docs/REPOSITORY_LAYOUT.md` | Ranh giới repo + spec `prediction-batch.v1` (M5 → backend) |
 | `docs/IMPLEMENTATION_TODO.md` | Checklist tiến độ M1–M5 |
 | `docs/M5_PREDICTION_BATCH.md` | Hợp đồng M5: batch artifact, công thức `student_key`, bảng `ml_predictions` |
+| `docs/MODEL_EVALUATION_RELEASE_GUIDE.md` | Runbook evaluation, threshold Top-20%, release và checksum verification |
 
 ---
 
@@ -331,6 +332,31 @@ learnguard ml score \
 
 Đầu ra `artifacts/prediction-batches/<run-id-score>/`: `predictions.parquet` + `manifest.json` (prediction-batch.v1) + `success.json`. Backend đọc/verify theo `docs/M5_PREDICTION_BATCH.md`.
 
+Production nên dùng immutable release thay cho threshold CLI:
+
+```bash
+learnguard ml score \
+  --snapshot <snapshot> \
+  --release-artifact-dir artifacts/model-releases/<release-id> \
+  --artifacts-dir artifacts --run-id <run-id-score> \
+  --split <explicit-split>
+```
+
+Release mode bắt buộc split tường minh, dùng threshold Top-20% đã khóa và xuất
+`release.provenance.json` để theo dõi realized alert rate. Không tự retune khi drift.
+
+### Bước 4d — Benchmark và SHAP (ML owner)
+
+`learnguard ml benchmark` so sánh bounded Dummy, Logistic, ExtraTrees,
+HistGradientBoosting và Random Forest. Full mode khóa winner/threshold trên
+validation trước một lần final holdout. Khi holdout đã được tiêu thụ, bắt buộc thêm
+`--validation-only`; chế độ này chỉ load train+validation và không đủ điều kiện
+production release. `learnguard ml explain-shap` xuất local, business-grouped và
+global Linear SHAP cho Logistic v2; background luôn là train và output ở log-odds.
+`evaluate-validation-release` tạo confusion-matrix CSV/PNG tại threshold 0.5,
+max-F1 và production Top-20%; `create-release` đóng gói Logistic + preprocessor +
+threshold. Cả hai chỉ chấp nhận validation provenance và không load holdout.
+
 ### Bản đồ artifact toàn trình
 
 | Bước | Vị trí đầu ra |
@@ -340,8 +366,12 @@ learnguard ml score \
 | M4 preprocess | `artifacts/preprocessing-runs/<run-id>/` |
 | M4 train | `artifacts/model-runs/<run-id>/` (model.joblib + manifest + training-report) |
 | M5 score | `artifacts/prediction-batches/<run-id>/` |
+| Benchmark | `artifacts/benchmark-runs/<run-id>/` |
+| SHAP | `artifacts/explainability-runs/<run-id>/` |
+| Validation evaluation | `artifacts/evaluation-runs/<run-id>/` |
+| Production release | `artifacts/model-releases/<release-id>/` |
 
-**Nhắc lại 3 luật vàng** (mục 5.3): tune chỉ trên validation · holdout chạm 1 lần · mọi thao tác qua `load_snapshot_splits()`, không lọc tay. **Hạ tầng Postgres thuộc team backend** — máy dev không cần PG.
+**Nhắc lại 3 luật vàng** (mục 5.3): tune chỉ trên validation · holdout chạm 1 lần · mọi thao tác qua loader chuẩn (`load_snapshot_splits()` hoặc restricted `load_snapshot_partitions()`), không lọc tay. **Hạ tầng Postgres thuộc team backend** — máy dev không cần PG.
 
 ---
 

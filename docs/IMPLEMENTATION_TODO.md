@@ -16,13 +16,17 @@
 
 - [x] Implement baseline Logistic Regression train-only dưới dạng ML stage riêng;
   không sửa data pipeline contract.
-- [ ] Implement model ứng viên.
-- [ ] Dùng temporal split: train 2013B+2013J → validation 2014B → holdout 2014J. *(hợp đồng từ data engineer — SPLIT_RULES; ưu tiên train nhiều, holdout 2014J là kỳ duy nhất chưa tiêu hao)*
-- [ ] Báo cáo Recall@top-k, AUC, ECE, fairness slices và false negatives.
-- [ ] Tuning threshold chỉ trên validation; ghi model card/registry metadata.
-- [x] Implement scoring, SHAP, uncertainty, insufficient-data và manual-review. *(BatchScorer: explain theo logistic contribution (thay SHAP), uncertainty `1−|2p−1|`, insufficient_data vẫn có risk_score nhưng không gán nhãn, manual_review khi uncertainty ≥ 0.8; verify thật: 27,535 dòng → 22,096 scored / 4,643 manual_review / 796 insufficient_data)*
+- [x] Implement model ứng viên và bounded benchmark. *(Dummy + Logistic + ExtraTrees + HistGradientBoosting + Random Forest A/B/C; validation-only không truy cập holdout; candidate chưa release sang M5)*
+- [x] Dùng temporal split: train 2013B+2013J → validation 2014B → holdout 2014J. *(selection chỉ validation; locked config trước final holdout)*
+- [x] Báo cáo Recall/Precision@top-k, ROC/PR-AUC, ECE/Brier, fairness slices, false negatives và latency/artifact size.
+- [x] Tuning threshold chỉ trên validation; production Logistic dùng scalar threshold
+  từ alert budget Top-20%, giữ max-F1 làm comparator và đóng gói trong release metadata.
+- [x] Implement scoring, Linear SHAP, uncertainty, insufficient-data và manual-review. *(Logistic v2 dùng interventional SHAP `coef*(x-train_mean)` ở log-odds; verify thật 27,535 dòng, additivity error < 2e-15)*
 - [x] Implement `prediction-batch.v1` export, manifest/checksum và stable pseudonymous key. *(PredictionBatchExporter + load_prediction_batch_manifest: manifest sha256 checksum, atomic publish (staging + os.replace), student_key = sha256 16 hex không lộ id_student; CLI `ml score`)*
 - [x] Implement shared PostgreSQL prediction store cho serving. *(PRODUCTION MODE sau khi chốt 2026-10-30 bản 2: ml-data ghi thẳng bảng `ml_predictions` — PK (code_module, code_presentation, student_key), upsert transactional all-or-nothing, idempotent DDL + index; backend là consumer CHỈ ĐỌC, không implement import service. predictions_store.py + `ml score --pg-dsn`/`LEARNGUARD_PG_DSN`; file prediction-batch.v1 vẫn xuất song song làm audit trail; scoring có tham số `splits` — mặc định cả 3 split)*
+- [x] Đóng gói Logistic production dưới `model-release.v1`: model + preprocessor +
+  validation evaluation + threshold policy + checksum; release mode của M5 cấm
+  threshold override và giữ nguyên `prediction-batch.v1`/PostgreSQL columns.
 
 ## Orchestration/Release
 

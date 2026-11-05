@@ -28,7 +28,7 @@ from sklearn.linear_model import LogisticRegression
 from threadpoolctl import threadpool_limits
 
 from learnguard.data.features import KEYS, SPLIT_RULES
-from learnguard.data.loading import TARGET_COLUMN, load_snapshot_splits
+from learnguard.data.loading import TARGET_COLUMN, load_snapshot_partitions
 from learnguard.ml.preprocessing import (
     FORBIDDEN_OUTPUT_COLUMNS,
     PREPROCESSING_INPUT_COLUMNS,
@@ -40,8 +40,13 @@ from learnguard.ml.preprocessing import (
     load_preprocessing_artifact,
 )
 
-MODEL_ARTIFACT_SCHEMA_VERSION = "logistic-model-v1"
-MODEL_SEMANTIC_VERSION_PREFIX = "logreg-v1"
+LEGACY_MODEL_ARTIFACT_SCHEMA_VERSION = "logistic-model-v1"
+MODEL_ARTIFACT_SCHEMA_VERSION = "logistic-model-v2"
+SUPPORTED_MODEL_ARTIFACT_SCHEMAS = {
+    LEGACY_MODEL_ARTIFACT_SCHEMA_VERSION, MODEL_ARTIFACT_SCHEMA_VERSION,
+}
+MODEL_SEMANTIC_VERSION_PREFIX = "logreg-v2"
+SHAP_BACKGROUND_FILENAME = "shap_background.npz"
 POSITIVE_CLASS, NEGATIVE_CLASS = 1, 0
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
@@ -128,9 +133,9 @@ def _resolved_estimator_params() -> dict[str, object]:
     return LogisticRegression(**LOGISTIC_BASELINE_PARAMS).get_params(deep=False)
 
 
-def model_contract_hash() -> str:
+def model_contract_hash(schema_version: str = MODEL_ARTIFACT_SCHEMA_VERSION) -> str:
     return _canonical_hash({
-        "schema": MODEL_ARTIFACT_SCHEMA_VERSION,
+        "schema": schema_version,
         "model": "sklearn.linear_model.LogisticRegression",
         "params": _resolved_estimator_params(),
         "target": TARGET_COLUMN,
@@ -139,6 +144,8 @@ def model_contract_hash() -> str:
         "input_dtype": "float64",
         "native_threads": 1,
         "packages": _packages(),
+        **({"explanation": "linear-shap-interventional-log-odds-v1"}
+           if schema_version == MODEL_ARTIFACT_SCHEMA_VERSION else {}),
     })
 
 
@@ -174,8 +181,8 @@ def _validate_run_id(run_id: str) -> str:
 
 def _verified_train(snapshot_path: Path | str, preprocessor_dir: Path | str) -> VerifiedTrainMatrix:
     snapshot_path = Path(snapshot_path)
-    splits = load_snapshot_splits(snapshot_path)
-    prepared = _prepare_split("train", splits.train)
+    selected = load_snapshot_partitions(snapshot_path, ("train",))
+    prepared = _prepare_split("train", selected.frame("train"))
     bundle = load_preprocessing_artifact(preprocessor_dir, snapshot_path)
     X = np.ascontiguousarray(bundle.transform(prepared.X), dtype=np.float64)
     y = prepared.y.to_numpy(dtype=np.int64)
@@ -189,7 +196,7 @@ def _verified_train(snapshot_path: Path | str, preprocessor_dir: Path | str) -> 
     if verification["split_results"]["train"]["transformed_semantic_hash"] != matrix_hash:
         raise ValueError("model_training_matrix_hash_mismatch")
     return VerifiedTrainMatrix(
-        prepared.keys, X, y, names, splits.snapshot_version, bundle.manifest,
+        prepared.keys, X, y, names, selected.snapshot_version, bundle.manifest,
         matrix_hash, _series_hash(prepared.keys, prepared.y),
     )
 
@@ -241,7 +248,13 @@ def train_logistic_baseline(snapshot_path: Path | str, preprocessing_artifact_di
         report_path = staging / "model.training-report.json"
         manifest_path = staging / "model.manifest.json"
         marker_path = staging / "model.success.json"
+        background_path = staging / SHAP_BACKGROUND_FILENAME
         joblib.dump(model, artifact, compress=3)
+        np.savez_compressed(
+            background_path,
+            mean=np.mean(train.X, axis=0, dtype=np.float64),
+            covariance=np.cov(train.X, rowvar=False, dtype=np.float64),
+        )
         reloaded = joblib.load(artifact)
         if not np.array_equal(probabilities, _probabilities(reloaded, train.X)):
             raise ValueError("model_reload_probability_mismatch")
@@ -279,6 +292,14 @@ def train_logistic_baseline(snapshot_path: Path | str, preprocessing_artifact_di
             "train_probability_semantic_hash": probability_hash,
             "packages": _packages(), "model_artifact_sha256": _file_hash(artifact),
             "training_report_sha256": _file_hash(report_path),
+            "explanation": {
+                "method": "linear-shap-interventional-v1",
+                "output_space": "log_odds",
+                "background_split": "train",
+                "background_row_count": len(train.X),
+                "background_filename": SHAP_BACKGROUND_FILENAME,
+                "background_sha256": _file_hash(background_path),
+            },
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
@@ -288,6 +309,7 @@ def train_logistic_baseline(snapshot_path: Path | str, preprocessing_artifact_di
             "manifest_sha256": _file_hash(manifest_path),
             "model_artifact_sha256": manifest["model_artifact_sha256"],
             "training_report_sha256": manifest["training_report_sha256"],
+            "background_sha256": manifest["explanation"]["background_sha256"],
         }, indent=2, sort_keys=True))
         if target.exists():
             raise FileExistsError(f"model_run_id_exists:{run_id}")
@@ -295,7 +317,10 @@ def train_logistic_baseline(snapshot_path: Path | str, preprocessing_artifact_di
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    paths = tuple(target / name for name in ("model.joblib", "model.manifest.json", "model.training-report.json", "model.success.json"))
+    paths = tuple(target / name for name in (
+        "model.joblib", SHAP_BACKGROUND_FILENAME, "model.manifest.json",
+        "model.training-report.json", "model.success.json",
+    ))
     return LogisticTrainingResult("ok", run_id, target, version, contract_hash, str(state["learned_state_hash"]), train.matrix_hash, train.target_hash, paths)
 
 
@@ -309,12 +334,23 @@ def load_logistic_model_artifact(model_artifact_dir: Path | str, snapshot_path: 
     if marker.get("manifest_sha256") != _file_hash(manifest_path):
         raise ValueError("model_manifest_hash_mismatch")
     manifest = json.loads(manifest_path.read_text())
-    if manifest.get("model_contract_hash") != model_contract_hash() or manifest.get("packages") != _packages():
+    schema = str(manifest.get("schema_version"))
+    if schema not in SUPPORTED_MODEL_ARTIFACT_SCHEMAS:
+        raise ValueError(f"unsupported_model_schema_version:{schema}")
+    if manifest.get("model_contract_hash") != model_contract_hash(schema) or manifest.get("packages") != _packages():
         raise ValueError("model_contract_or_dependency_mismatch")
     if manifest.get("model_artifact_sha256") != _file_hash(artifact) or marker.get("model_artifact_sha256") != _file_hash(artifact):
         raise ValueError("model_artifact_hash_mismatch")
     if manifest.get("training_report_sha256") != _file_hash(report_path) or marker.get("training_report_sha256") != _file_hash(report_path):
         raise ValueError("model_report_hash_mismatch")
+    if schema == MODEL_ARTIFACT_SCHEMA_VERSION:
+        background = root / SHAP_BACKGROUND_FILENAME
+        explanation = manifest.get("explanation", {})
+        if not background.is_file():
+            raise FileNotFoundError("model_shap_background_missing")
+        expected_hash = explanation.get("background_sha256") if isinstance(explanation, dict) else None
+        if expected_hash != _file_hash(background) or marker.get("background_sha256") != expected_hash:
+            raise ValueError("model_shap_background_hash_mismatch")
     train = _verified_train(snapshot_path, preprocessing_artifact_dir)
     expected = {
         "snapshot_version": train.snapshot_version,

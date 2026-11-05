@@ -38,14 +38,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     score = commands.add_parser("score", help="score a snapshot and publish prediction-batch.v1")
     score.add_argument("--snapshot", type=Path, required=True)
-    score.add_argument("--model-artifact-dir", type=Path, required=True)
-    score.add_argument("--preprocessing-artifact-dir", type=Path, required=True)
+    score.add_argument("--model-artifact-dir", type=Path)
+    score.add_argument("--preprocessing-artifact-dir", type=Path)
+    score.add_argument("--release-artifact-dir", type=Path)
     score.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
     score.add_argument("--run-id", required=True)
-    score.add_argument("--threshold", type=float, default=0.5)
+    score.add_argument("--threshold", type=float, default=None)
     score.add_argument(
         "--split", action="append", default=None,
-        help="split to score (repeatable or comma-separated; default: all three)",
+        help=(
+            "split to score (repeatable or comma-separated; legacy default: "
+            "all three; release mode requires an explicit split)"
+        ),
     )
     score.add_argument(
         "--pg-dsn", default=None,
@@ -55,6 +59,51 @@ def build_parser() -> argparse.ArgumentParser:
     )
     score.add_argument("--pg-table", default="ml_predictions",
                        help="prediction store table name (default: ml_predictions)")
+
+    explain = commands.add_parser("explain-shap", help="publish Linear SHAP artifacts")
+    explain.add_argument("--snapshot", type=Path, required=True)
+    explain.add_argument("--model-artifact-dir", type=Path, required=True)
+    explain.add_argument("--preprocessing-artifact-dir", type=Path, required=True)
+    explain.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    explain.add_argument("--run-id", required=True)
+    explain.add_argument("--split", action="append", default=None)
+
+    benchmark = commands.add_parser("benchmark", help="run validation selection and one-shot holdout evaluation")
+    benchmark.add_argument("--snapshot", type=Path, required=True)
+    benchmark.add_argument("--preprocessing-artifact-dir", type=Path, required=True)
+    benchmark.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    benchmark.add_argument("--run-id", required=True)
+    benchmark.add_argument(
+        "--validation-only", action="store_true",
+        help="fit/select on train+validation without loading or evaluating holdout",
+    )
+
+    release_eval = commands.add_parser(
+        "evaluate-validation-release",
+        help="build validation-only threshold and confusion-matrix artifacts",
+    )
+    release_eval.add_argument("--snapshot", type=Path, required=True)
+    release_eval.add_argument("--benchmark-artifact-dir", type=Path, required=True)
+    release_eval.add_argument("--model-artifact-dir", type=Path, required=True)
+    release_eval.add_argument("--preprocessing-artifact-dir", type=Path, required=True)
+    release_eval.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    release_eval.add_argument("--run-id", required=True)
+
+    create_release = commands.add_parser(
+        "create-release", help="publish an immutable Logistic production release",
+    )
+    create_release.add_argument("--snapshot", type=Path, required=True)
+    create_release.add_argument("--model-artifact-dir", type=Path, required=True)
+    create_release.add_argument("--preprocessing-artifact-dir", type=Path, required=True)
+    create_release.add_argument("--evaluation-artifact-dir", type=Path, required=True)
+    create_release.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    create_release.add_argument("--run-id", required=True)
+
+    verify_release = commands.add_parser(
+        "verify-release", help="verify a model-release.v1 artifact",
+    )
+    verify_release.add_argument("--release-artifact-dir", type=Path, required=True)
+    verify_release.add_argument("--snapshot", type=Path, required=True)
     return parser
 
 
@@ -126,17 +175,82 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run_id,
             )
         elif args.command == "score":
-            from learnguard.ml.scoring import score_snapshot
-            result = score_snapshot(
-                args.snapshot,
-                args.model_artifact_dir,
-                args.preprocessing_artifact_dir,
-                args.artifacts_dir / "prediction-batches" / args.run_id / "predictions.parquet",
-                args.threshold,
-                args.run_id,
-                splits=_requested_splits(args.split),
+            output_path = (
+                args.artifacts_dir / "prediction-batches" / args.run_id
+                / "predictions.parquet"
             )
+            if args.release_artifact_dir is not None:
+                if (
+                    args.model_artifact_dir is not None
+                    or args.preprocessing_artifact_dir is not None
+                    or args.threshold is not None
+                ):
+                    raise ValueError("release_score_legacy_arguments_forbidden")
+                if not args.split:
+                    raise ValueError("release_score_explicit_split_required")
+                from learnguard.ml.scoring import score_release_snapshot
+                result = score_release_snapshot(
+                    args.snapshot, args.release_artifact_dir, output_path,
+                    args.run_id, splits=_requested_splits(args.split),
+                )
+            else:
+                if (
+                    args.model_artifact_dir is None
+                    or args.preprocessing_artifact_dir is None
+                ):
+                    raise ValueError("legacy_score_artifact_arguments_required")
+                from learnguard.ml.scoring import score_snapshot
+                result = score_snapshot(
+                    args.snapshot,
+                    args.model_artifact_dir,
+                    args.preprocessing_artifact_dir,
+                    output_path,
+                    0.5 if args.threshold is None else args.threshold,
+                    args.run_id,
+                    splits=_requested_splits(args.split),
+                )
             _write_predictions_to_store(result, args)
+        elif args.command == "explain-shap":
+            from learnguard.ml.explainability import build_shap_artifact
+            result = build_shap_artifact(
+                args.snapshot, args.model_artifact_dir,
+                args.preprocessing_artifact_dir, args.artifacts_dir,
+                args.run_id, splits=_requested_splits(args.split),
+            )
+        elif args.command == "benchmark":
+            from learnguard.ml.benchmark import run_benchmark
+            result = run_benchmark(
+                args.snapshot, args.preprocessing_artifact_dir,
+                args.artifacts_dir, args.run_id,
+                evaluation_scope=(
+                    "validation_only" if args.validation_only else "full"
+                ),
+            )
+        elif args.command == "evaluate-validation-release":
+            from learnguard.ml.release import build_validation_evaluation_artifact
+            result = build_validation_evaluation_artifact(
+                args.snapshot, args.benchmark_artifact_dir,
+                args.model_artifact_dir, args.preprocessing_artifact_dir,
+                args.artifacts_dir, args.run_id,
+            )
+        elif args.command == "create-release":
+            from learnguard.ml.release import build_model_release
+            result = build_model_release(
+                args.snapshot, args.model_artifact_dir,
+                args.preprocessing_artifact_dir, args.evaluation_artifact_dir,
+                args.artifacts_dir, args.run_id,
+            )
+        elif args.command == "verify-release":
+            from learnguard.ml.release import load_and_verify_model_release
+            release = load_and_verify_model_release(
+                args.release_artifact_dir, args.snapshot,
+            )
+            result = {
+                "status": "ok", "release_id": release.release_id,
+                "model_version": release.model_version,
+                "snapshot_version": release.snapshot_version,
+                "production_threshold": release.production_threshold,
+            }
         else:
             from learnguard.ml.training import verify_logistic_model_artifact
             result = verify_logistic_model_artifact(
@@ -144,8 +258,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.snapshot,
                 args.preprocessing_artifact_dir,
             )
-        print(json.dumps(asdict(result), indent=2, default=str))
-        return 0 if result.status == "ok" else 1
+        payload = result if isinstance(result, dict) else asdict(result)
+        print(json.dumps(payload, indent=2, default=str))
+        status = payload.get("status")
+        return 0 if status == "ok" else 1
     except Exception as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 2

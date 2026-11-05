@@ -56,3 +56,15 @@ Run the unchanged data pipeline exactly as documented in
 [`docs/PIPELINE_GUIDE.md`](docs/PIPELINE_GUIDE.md), then use the resulting
 `snapshot.parquet` with the model-only commands documented in
 [`docs/M4_LOGISTIC_BASELINE.md`](docs/M4_LOGISTIC_BASELINE.md).
+
+Model v2 bổ sung train-background Linear SHAP và bounded validation-first benchmark.
+Xem hướng dẫn M4 cho hai lệnh `learnguard ml explain-shap` và
+`learnguard ml benchmark`.
+
+Production Logistic releases are published separately from immutable training
+artifacts. `learnguard ml evaluate-validation-release` derives the validation
+Top-20% alert-budget threshold and confusion matrices; `create-release` packages
+that policy with verified model/preprocessor payloads. Release-mode scoring reads
+the locked threshold and never silently falls back to `0.5`.
+
+Runbook kiểm chứng đầy đủ: [`docs/MODEL_EVALUATION_RELEASE_GUIDE.md`](docs/MODEL_EVALUATION_RELEASE_GUIDE.md).
