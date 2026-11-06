@@ -9,6 +9,16 @@ from typing import Sequence
 
 from learnguard.ml.scoring import DEFAULT_SCORE_SPLITS
 
+_DEFAULT_SNAPSHOT = Path("artifacts/feature_snapshot_m2/snapshot.parquet")
+
+
+def _default_eval_run_id(prefix: str) -> str:
+    """Default run-id cho evaluate: eval-{data|ml|all}-YYYYMMDD-HHMMSS."""
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"{prefix}-{stamp}"
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="learnguard")
@@ -115,6 +125,92 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_release.add_argument("--release-artifact-dir", type=Path, required=True)
     verify_release.add_argument("--snapshot", type=Path, required=True)
+
+    # ---- evaluate: evaluation gates cấp 1 (scorecard eval-report.v1) --------
+    evaluate = root.add_parser(
+        "evaluate", help="evaluation gates publishing eval-report.v1 scorecards",
+    )
+    eval_commands = evaluate.add_subparsers(dest="eval_command", required=True)
+
+    eval_data = eval_commands.add_parser("data", help="Gate 1 — data quality scorecard")
+    eval_data.add_argument("--snapshot", type=Path, default=_DEFAULT_SNAPSHOT)
+    eval_data.add_argument("--baseline-snapshot", type=Path, default=None)
+    eval_data.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    eval_data.add_argument("--run-id", default=None)
+
+    eval_ml = eval_commands.add_parser("ml", help="Gate 2 — ML model scorecard")
+    eval_ml.add_argument("--model-artifact-dir", type=Path, default=None)
+    eval_ml.add_argument("--preprocessing-artifact-dir", type=Path, default=None)
+    eval_ml.add_argument("--snapshot", type=Path, default=_DEFAULT_SNAPSHOT)
+    eval_ml.add_argument("--min-roc-auc", type=float, default=0.70)
+    eval_ml.add_argument("--baseline-model-dir", type=Path, default=None)
+    eval_ml.add_argument(
+        "--baseline-preprocessing-artifact-dir", type=Path, default=None,
+        help="default: dùng preprocessing hiện tại",
+    )
+    eval_ml.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    eval_ml.add_argument("--run-id", default=None)
+
+    eval_llm = eval_commands.add_parser(
+        "llm", help="Gate 3 — LLM advisor-brief quality scorecard (read-only DB)",
+    )
+    eval_llm.add_argument(
+        "--pg-dsn", default=None,
+        help="PostgreSQL DSN của store chia sẻ "
+             "(falls back to LEARNGUARD_PG_DSN; mọi check skipped khi trống)",
+    )
+    eval_llm.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    eval_llm.add_argument("--run-id", default=None)
+    eval_llm.add_argument(
+        "--limit", type=int, default=5000,
+        help="số brief/calls tối đa quét (default: 5000)",
+    )
+    eval_llm.add_argument(
+        "--judge-sample", type=int, default=10,
+        help="số brief MỚI NHẤT judge chấm (default: 10; 0 = tắt judge_quality)",
+    )
+    eval_llm.add_argument(
+        "--llm-api-key", default=None,
+        help="API key Gemini cho judge_quality (falls back to env "
+             "LLM_API_KEY rồi GEMINI_API_KEY; không key → check skipped). "
+             "Key không bao giờ được ghi vào scorecard.",
+    )
+    eval_llm.add_argument(
+        "--judge-model", default=None,
+        help="model Gemini làm judge (default: gemini-3.1-flash-lite)",
+    )
+
+    eval_all = eval_commands.add_parser("all", help="Gate 1+2+3 — data + ml + llm cùng run-id")
+    eval_all.add_argument("--snapshot", type=Path, default=_DEFAULT_SNAPSHOT)
+    eval_all.add_argument("--baseline-snapshot", type=Path, default=None)
+    eval_all.add_argument("--model-artifact-dir", type=Path, default=None)
+    eval_all.add_argument("--preprocessing-artifact-dir", type=Path, default=None)
+    eval_all.add_argument("--min-roc-auc", type=float, default=0.70)
+    eval_all.add_argument("--baseline-model-dir", type=Path, default=None)
+    eval_all.add_argument(
+        "--baseline-preprocessing-artifact-dir", type=Path, default=None,
+        help="default: dùng preprocessing hiện tại",
+    )
+    eval_all.add_argument(
+        "--pg-dsn", default=None,
+        help="PostgreSQL DSN cho LLM gate (falls back to LEARNGUARD_PG_DSN)",
+    )
+    eval_all.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    eval_all.add_argument("--run-id", default=None)
+    eval_all.add_argument("--limit", type=int, default=5000)
+    eval_all.add_argument(
+        "--judge-sample", type=int, default=10,
+        help="pass-through LLM gate: số brief judge chấm (default: 10)",
+    )
+    eval_all.add_argument(
+        "--llm-api-key", default=None,
+        help="pass-through LLM gate: API key Gemini cho judge_quality "
+             "(falls back to env LLM_API_KEY/GEMINI_API_KEY)",
+    )
+    eval_all.add_argument(
+        "--judge-model", default=None,
+        help="pass-through LLM gate: model Gemini làm judge",
+    )
     return parser
 
 
@@ -169,6 +265,8 @@ def _write_predictions_to_store(report: object, args: argparse.Namespace) -> Non
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.area == "evaluate":
+            return _run_evaluate(args)
         if args.command == "preprocess":
             from learnguard.ml.preprocessing import build_preprocessing_artifact
             result = build_preprocessing_artifact(
@@ -280,6 +378,83 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
+
+
+def _require_ml_inputs(args: argparse.Namespace) -> tuple[Path, Path]:
+    """`evaluate ml`/`all` cần model + preprocessing artifact — fail-loudly nếu thiếu."""
+    if args.model_artifact_dir is None:
+        raise ValueError("evaluate_ml_model_artifact_required")
+    if args.preprocessing_artifact_dir is None:
+        raise ValueError("evaluate_ml_preprocessing_artifact_required")
+    return args.model_artifact_dir, args.preprocessing_artifact_dir
+
+
+def _run_evaluate(args: argparse.Namespace) -> int:
+    """Gate 1/2/3 — chạy evaluation gates, publish scorecard, exit 0/1 theo FAIL."""
+    from learnguard.evaluation.data_gate import run_data_gate
+    from learnguard.evaluation.llm_gate import resolve_pg_dsn, run_llm_gate
+    from learnguard.evaluation.ml_gate import run_ml_gate
+    from learnguard.evaluation.scorecard import (
+        evaluate_exit_code,
+        format_summary,
+        publish_evaluation_run,
+    )
+
+    command = args.eval_command
+    run_id = args.run_id or _default_eval_run_id(f"eval-{command}")
+    if command == "data":
+        scorecards = [run_data_gate(args.snapshot, args.baseline_snapshot, run_id)]
+    elif command == "ml":
+        model_dir, preprocessing_dir = _require_ml_inputs(args)
+        scorecards = [run_ml_gate(
+            model_dir, preprocessing_dir, args.snapshot, run_id,
+            min_roc_auc=args.min_roc_auc,
+            baseline_model_dir=args.baseline_model_dir,
+            baseline_preprocessing_artifact_dir=(
+                args.baseline_preprocessing_artifact_dir
+            ),
+        )]
+    elif command == "llm":
+        scorecards = [run_llm_gate(
+            resolve_pg_dsn(args.pg_dsn), run_id, limit=args.limit,
+            judge_sample=args.judge_sample,
+            llm_api_key=args.llm_api_key,
+            judge_model=args.judge_model,
+        )]
+    else:  # eval_command == "all"
+        model_dir, preprocessing_dir = _require_ml_inputs(args)
+        scorecards = [
+            run_data_gate(args.snapshot, args.baseline_snapshot, run_id),
+            run_ml_gate(
+                model_dir, preprocessing_dir, args.snapshot, run_id,
+                min_roc_auc=args.min_roc_auc,
+                baseline_model_dir=args.baseline_model_dir,
+                baseline_preprocessing_artifact_dir=(
+                    args.baseline_preprocessing_artifact_dir
+                ),
+            ),
+            # Gate 3 — LLM gate đọc chung PostgreSQL, publish thêm eval_llm.json
+            run_llm_gate(
+                resolve_pg_dsn(args.pg_dsn), run_id, limit=args.limit,
+                judge_sample=args.judge_sample,
+                llm_api_key=args.llm_api_key,
+                judge_model=args.judge_model,
+            ),
+        ]
+    run_dir = publish_evaluation_run(args.artifacts_dir, run_id, scorecards)
+    for card in scorecards:
+        print(format_summary(card))
+    total: dict[str, int] = {}
+    for card in scorecards:
+        for key, value in card.summary().items():
+            total[key] = total.get(key, 0) + value
+    print(
+        f"combined: total={total.get('total', 0)} pass={total.get('pass', 0)} "
+        f"warn={total.get('warn', 0)} fail={total.get('fail', 0)} "
+        f"skipped={total.get('skipped', 0)}"
+    )
+    print(f"evaluation_run_dir: {run_dir}")
+    return evaluate_exit_code(scorecards)
 
 
 def run_pipeline_command(data_dir: Path, artifacts_dir: Path, cutoff_day: int) -> int:
