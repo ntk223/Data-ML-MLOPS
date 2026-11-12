@@ -37,6 +37,7 @@ from learnguard.ml.training import (
     MODEL_ARTIFACT_SCHEMA_VERSION,
     SHAP_BACKGROUND_FILENAME,
 )
+from learnguard.ml.adapters import SUPPORTED_MODEL_SCHEMAS
 
 ALERT_BUDGET_FRACTION = 0.20
 FAIRNESS_COLUMN = "gender"
@@ -207,7 +208,7 @@ def _check_artifact_integrity(model_artifact_dir: Path) -> GateCheck:
         "schema_version": schema,
         "model_version": manifest.get("model_semantic_version"),
     }
-    if schema not in {LEGACY_MODEL_ARTIFACT_SCHEMA_VERSION, MODEL_ARTIFACT_SCHEMA_VERSION}:
+    if schema not in SUPPORTED_MODEL_SCHEMAS:
         observed["supported"] = False
         return GateCheck(
             "artifact_integrity", "Model manifest tồn tại, schema + hash khớp",
@@ -228,15 +229,15 @@ def _check_artifact_integrity(model_artifact_dir: Path) -> GateCheck:
             "fail", observed, None,
             "model.success.json thiếu hoặc manifest_sha256 lệch hash manifest.json",
         )
-    if schema == MODEL_ARTIFACT_SCHEMA_VERSION:
+    if schema != LEGACY_MODEL_ARTIFACT_SCHEMA_VERSION:
         background = model_artifact_dir / SHAP_BACKGROUND_FILENAME
         observed["shap_background_exists"] = background.is_file()
         if not background.is_file():
             return GateCheck(
                 "artifact_integrity", "Model manifest tồn tại, schema + hash khớp",
                 "fail", observed,
-                f"schema {MODEL_ARTIFACT_SCHEMA_VERSION} yêu cầu {SHAP_BACKGROUND_FILENAME}",
-                f"Model v2 thiếu {SHAP_BACKGROUND_FILENAME} — không giải thích được",
+                f"schema {schema} yêu cầu {SHAP_BACKGROUND_FILENAME}",
+                f"Model thiếu {SHAP_BACKGROUND_FILENAME} — không giải thích được",
             )
         return GateCheck(
             "artifact_integrity", "Model manifest tồn tại, schema + hash khớp",
@@ -340,16 +341,18 @@ def _check_shap_additivity(context: ValidationContext, schema_version: str) -> G
         "max_abs_error": max_error,
         "mean_abs_error": float(errors.mean()) if errors.size else 0.0,
     }
-    if max_error > THRESHOLDS.shap_max_error:
+    tolerance = 1e-5 if batch.method.startswith("tree-shap") else THRESHOLDS.shap_max_error
+    observed["tolerance"] = tolerance
+    if max_error > tolerance:
         return GateCheck(
             "shap_additivity", "expected_value + ΣSHAP == decision_function",
-            "fail", observed, f"max error ≤ {THRESHOLDS.shap_max_error:g}",
+            "fail", observed, f"max error ≤ {tolerance:g}",
             f"SHAP không cộng đúng: max error={max_error:.3e} > "
-            f"{THRESHOLDS.shap_max_error:g} trên {matrix.shape[0]} dòng validation",
+            f"{tolerance:g} trên {matrix.shape[0]} dòng validation",
         )
     return GateCheck(
         "shap_additivity", "expected_value + ΣSHAP == decision_function",
-        "pass", observed, f"max error ≤ {THRESHOLDS.shap_max_error:g}",
+        "pass", observed, f"max error ≤ {tolerance:g}",
         f"SHAP cộng đúng trên {matrix.shape[0]} dòng (max error={max_error:.3e}, "
         f"method={batch.method})",
     )
@@ -413,8 +416,14 @@ def _check_regression_vs_baseline(
             "skipped", {"reason": "no_baseline_model"}, None,
             "Không truyền --baseline-model-dir → bỏ qua check hồi quy",
         )
+    baseline_root = Path(baseline_model_dir)
+    baseline_manifest_path = baseline_root / MODEL_MANIFEST_FILENAME
+    baseline_manifest = json.loads(baseline_manifest_path.read_text())
+    baseline_payload = baseline_root / str(
+        baseline_manifest.get("model_payload_filename", "model.joblib")
+    )
     baseline_model = load_scoring_model(
-        Path(baseline_model_dir), snapshot_path, baseline_preprocessing_dir,
+        baseline_root, snapshot_path, baseline_preprocessing_dir,
     )
     selected = load_snapshot_partitions(snapshot_path, ("validation",))
     prepared = _prepare_split("validation", selected.frame("validation"))
@@ -430,6 +439,10 @@ def _check_regression_vs_baseline(
         "delta": round(delta, 4),
         "new_model_version": context.model_version,
         "baseline_model_version": str(baseline_model.version),
+        "baseline_model_type": baseline_manifest.get("model_type"),
+        "baseline_model_contract_hash": baseline_manifest.get("model_contract_hash"),
+        "baseline_model_manifest_sha256": _file_hash(baseline_manifest_path),
+        "baseline_model_artifact_sha256": _file_hash(baseline_payload),
     }
     if delta < -THRESHOLDS.regression_tolerance:
         return GateCheck(

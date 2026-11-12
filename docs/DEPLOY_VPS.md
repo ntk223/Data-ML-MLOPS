@@ -73,21 +73,23 @@ cd /opt/learnguard/ml-data
 # 4.1. Chuỗi M1→M3 (quickstart mục 4 của PIPELINE_GUIDE.md)
 #   → kỳ vọng in "PIPELINE OK — snapshot-v1:..."
 
-# 4.2. M4: train model release đầu tiên (chạy 1 lần mỗi khi ra model mới)
+# 4.2. M4: train XGBoost contract (chạy 1 lần mỗi khi ra model mới)
 .venv/bin/learnguard ml preprocess \
   --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
   --artifacts-dir artifacts --run-id prod-pre-v1
-.venv/bin/learnguard ml train-logistic \
+.venv/bin/learnguard ml train-xgboost \
   --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
   --preprocessing-artifact-dir artifacts/preprocessing-runs/prod-pre-v1 \
-  --artifacts-dir artifacts --run-id prod-model-v1
+  --artifacts-dir artifacts --run-id prod-xgb-v2
+
+# Chạy validation benchmark, ML gate, evaluation và governance promotion theo
+# docs/M4_XGBOOST.md; cấu hình immutable release ID sau khi verify.
 
 # 4.3. M5: score thử (chế độ file-only, chưa cần DSN)
 .venv/bin/learnguard ml score \
   --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
-  --model-artifact-dir artifacts/model-runs/prod-model-v1 \
-  --preprocessing-artifact-dir artifacts/preprocessing-runs/prod-pre-v1 \
-  --artifacts-dir artifacts --run-id prod-score-test --split holdout
+  --release-artifact-dir "artifacts/model-releases/${LEARNGUARD_RELEASE_ID}" \
+  --artifacts-dir artifacts --run-id prod-score-test --split validation
 # Kỳ vọng: artifacts/prediction-batches/prod-score-test/ có predictions.parquet + manifest.json + success.json
 ```
 
@@ -128,22 +130,24 @@ assert ing.status == 'ok' and audit.status == 'ok' and gate.status == 'ok', \
 print('PIPELINE OK —', snap.snapshot_version)
 PYEOF
 
-# --- M5: score với model release đang dùng (MODEL_RUN_ID khai báo trong .env) ---
+# --- M5: verify rồi score immutable release đang dùng ---
+"$PY" -m learnguard.cli ml verify-release \
+  --release-artifact-dir "artifacts/model-releases/${LEARNGUARD_RELEASE_ID}" \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet
 "$PY" -m learnguard.cli ml score \
   --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
-  --model-artifact-dir "artifacts/model-runs/${MODEL_RUN_ID}" \
-  --preprocessing-artifact-dir "artifacts/preprocessing-runs/${PREPROCESS_RUN_ID}" \
+  --release-artifact-dir "artifacts/model-releases/${LEARNGUARD_RELEASE_ID}" \
   --artifacts-dir artifacts --run-id "$RUN_ID" \
+  --split validation \
   --pg-dsn "$LEARNGUARD_PG_DSN" --pg-table ml_predictions
 
 echo "CRON OK — $RUN_ID"
 ```
 
-Bổ sung 2 dòng vào `.env`:
+Bổ sung release ID bất biến vào `.env`:
 
 ```bash
-MODEL_RUN_ID=prod-model-v1
-PREPROCESS_RUN_ID=prod-pre-v1
+LEARNGUARD_RELEASE_ID=xgboost-production-v4
 ```
 
 `chmod +x scripts/cron_pipeline.sh`
