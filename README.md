@@ -1,6 +1,6 @@
 # LearnGuard ML/Data
 
-Independent repository for the LearnGuard M1–M5 batch pipeline. The repository provides the initial package structure, typed contracts, core classes/functions, and TODOs; the pipeline logic is intentionally not implemented yet.
+Independent repository for the implemented LearnGuard M1–M5 batch pipeline, including leakage-safe data processing, Logistic/XGBoost model artifacts, evaluation gates, releases, scoring, and PostgreSQL export.
 
 ## Scope
 
@@ -61,10 +61,33 @@ Model v2 bổ sung train-background Linear SHAP và bounded validation-first ben
 Xem hướng dẫn M4 cho hai lệnh `learnguard ml explain-shap` và
 `learnguard ml benchmark`.
 
-Production Logistic releases are published separately from immutable training
+Logistic releases remain verified immutable rollback artifacts. Production releases are published separately from immutable training
 artifacts. `learnguard ml evaluate-validation-release` derives the validation
 Top-20% alert-budget threshold and confusion matrices; `create-release` packages
 that policy with verified model/preprocessor payloads. Release-mode scoring reads
 the locked threshold and never silently falls back to `0.5`.
 
 Runbook kiểm chứng đầy đủ: [`docs/MODEL_EVALUATION_RELEASE_GUIDE.md`](docs/MODEL_EVALUATION_RELEASE_GUIDE.md).
+
+## XGBoost production primary
+
+The CPU-only `xgboost_regularized` contract is train-only and produces a native
+UBJSON `xgboost-model-v2` artifact with train-background interventional Tree
+SHAP. A `model-release.v4` may become the operational primary only after the
+validation gate and a bound `promotion-decision.v2` governance approval pass.
+That decision permits PostgreSQL writes but is not a scientific superiority
+claim; the consumed 2014J holdout remains forbidden.
+
+Dependency routing uses `xgboost-cpu` only on Linux `x86_64`; Linux ARM and
+other platforms install the regular `xgboost` distribution.
+
+```bash
+.venv/bin/learnguard ml train-xgboost \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
+  --preprocessing-artifact-dir artifacts/preprocessing-runs/<pre-run> \
+  --artifacts-dir artifacts --run-id <xgb-run>
+```
+
+See [`docs/M4_XGBOOST.md`](docs/M4_XGBOOST.md) for the complete workflow and
+[`docs/MODEL_BENCHMARK_COMPARISON.md`](docs/MODEL_BENCHMARK_COMPARISON.md) for
+the reproducible Logistic/Random Forest B/XGBoost comparison.
