@@ -93,7 +93,7 @@ learnguard ml benchmark \
 
 Benchmark fit candidate chỉ trên train, chọn model/threshold trên validation,
 ghi `locked_config.json`, rồi gọi holdout prediction đúng một lần. Candidate winner
-chỉ phục vụ báo cáo lịch sử; Logistic hiện được giữ làm fallback/rollback.
+chỉ phục vụ báo cáo; M5 production tiếp tục dùng Logistic Regression.
 
 Full OULAD run `benchmark-20261105-shap` chọn HistGradientBoosting B trên validation
 (PR-AUC 0.7211, ROC-AUC 0.7283, threshold 0.30135). Final holdout một lần đạt
@@ -109,9 +109,7 @@ production; final evaluation cần temporal holdout mới hoặc quyết định
 
 ## Validation evaluation và production release
 
-Logistic là verified fallback/rollback và các production release cũ vẫn bất biến.
-XGBoost là operational primary theo governance policy trong `M4_XGBOOST.md`.
-Threshold của mỗi release là scalar threshold
+Logistic tiếp tục là production incumbent. Threshold vận hành là scalar threshold
 suy ra từ Top-20% validation score của đúng binary production; max-F1 chỉ là
 comparator. Nếu score bằng nhau tại biên, policy chọn scalar gần ngân sách nhất và
 ưu tiên không vượt ngân sách khi sai lệch bằng nhau. Release fail nếu sai lệch vượt
@@ -138,7 +136,7 @@ learnguard ml verify-release \
 ```
 
 Evaluation chỉ chấp nhận benchmark `validation_only` có checksum hợp lệ và binary
-Logistic trùng release model. Release tự chứa model/preprocessor bằng relative
+Logistic trùng production model. Release tự chứa model/preprocessor bằng relative
 paths, không sửa artifact nguồn. Với snapshot hiện tại, release ghi
 `holdout_access_policy=forbidden_prior_consumed`; Random Forest B vẫn chỉ là
-benchmark challenger và không có production adapter/release trong phạm vi này.
+validation release candidate và không có TreeSHAP/M5 adapter.

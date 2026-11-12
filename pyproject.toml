@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "learnguard"
 version = "0.5.0"
-description = "LearnGuard OULAD point-in-time data and model pipeline"
+description = "LearnGuard OULAD point-in-time data and Logistic baseline pipeline"
 requires-python = ">=3.11"
 
 dependencies = [
@@ -19,8 +19,6 @@ dependencies = [
     "sqlalchemy>=2.1,<3",
     "shap>=0.51,<0.52",
     "matplotlib>=3.11,<3.12",
-    "xgboost-cpu>=3.1.3,<3.2; platform_system == 'Linux' and platform_machine == 'x86_64'",
-    "xgboost>=3.1.3,<3.2; platform_system != 'Linux' or platform_machine != 'x86_64'",
 ]
 
 [project.optional-dependencies]
@@ -30,7 +28,6 @@ dev = [
     "nbclient>=0.11",
     "jupyterlab>=4.6",
     "pytest>=9",
-    "packaging>=24",
 ]
 
 [project.scripts]

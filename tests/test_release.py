@@ -56,8 +56,8 @@ def test_evaluation_artifact_has_confusion_matrices_and_no_holdout(release_run):
     assert policy["max_f1_comparator"]["threshold"] != policy["production_threshold"]
     csv_files = sorted((evaluation.artifact_dir / "confusion_matrices").glob("*.csv"))
     png_files = sorted((evaluation.artifact_dir / "plots").glob("confusion_matrix*.png"))
-    assert len(csv_files) == 27
-    assert len(png_files) == 27
+    assert len(csv_files) == 21
+    assert len(png_files) == 21
     assert all(path.stat().st_size > 0 for path in png_files)
     for path in csv_files:
         matrix = pd.read_csv(path)
@@ -83,9 +83,7 @@ def test_release_is_relocatable_verified_and_logistic_only(release_run, tmp_path
     manifest = json.loads((copied / "release.manifest.json").read_text())
     assert manifest["production_release_eligible"] is True
     assert manifest["candidate_promotion_eligible"] is False
-    assert manifest["schema_version"] == "model-release.v4"
-    assert manifest["release_status"] == "production"
-    assert manifest["database_write_allowed"] is True
+    assert manifest["random_forest_b_status"] == "validation_release_candidate"
     assert manifest["model_artifact_dir"] == "model"
     assert manifest["preprocessing_artifact_dir"] == "preprocessor"
 

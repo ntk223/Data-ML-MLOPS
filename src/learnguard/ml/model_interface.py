@@ -99,18 +99,3 @@ def load_scoring_model(model_artifact_dir: Path | str, snapshot_path: Path | str
     if builder is None:
         raise ValueError(f"unsupported_model_type:{model_type}")
     return builder(manifest, model_artifact_dir, snapshot_path, preprocessing_artifact_dir)
-
-
-def verify_model_artifact(model_artifact_dir: Path | str, snapshot_path: Path | str,
-                          preprocessing_artifact_dir: Path | str) -> object:
-    """Dispatch integrity/provenance verification using manifest model_type."""
-    manifest_path = Path(model_artifact_dir) / MODEL_MANIFEST_FILENAME
-    if not manifest_path.is_file():
-        raise FileNotFoundError(f"model_manifest_missing:{manifest_path}")
-    manifest = json.loads(manifest_path.read_text())
-    model_type = str(manifest.get("model_type"))
-    from learnguard.ml.adapters import MODEL_TYPE_VERIFIERS
-    verifier = MODEL_TYPE_VERIFIERS.get(model_type)
-    if verifier is None:
-        raise ValueError(f"unsupported_model_type:{model_type}")
-    return verifier(model_artifact_dir, snapshot_path, preprocessing_artifact_dir)

@@ -1,19 +1,11 @@
 # Model Evaluation & Production Release Guide
 
-**Mục tiêu:** kiểm chứng Model Evaluation, threshold Top-20%, XGBoost operational
-production release và Logistic rollback mà không truy cập lại holdout `2014J`.
-
-Release mới dùng `model-release.v4`; readers vẫn hỗ trợ Logistic release v1–v3
-và validation candidate cũ. XGBoost production bắt buộc có `promotion-decision.v2` gắn
-đúng model/benchmark/evaluation/ML-gate hashes. ML gate phải không có check fail,
-artifact integrity phải pass và regression phải dùng đúng model/preprocessor
-bên trong immutable Logistic rollback release được chỉ định. Release v4 đóng
-gói rollback release và bind type/version/manifest/payload hashes; xem
-`M4_XGBOOST.md`.
+**Mục tiêu:** kiểm chứng Model Evaluation, threshold Top-20% và Logistic
+production release mà không truy cập lại holdout `2014J`.
 
 **Phạm vi an toàn:** các lệnh trong guide chỉ dùng train để verify model và dùng
 validation artifact đã có để tính metric/threshold. Không chạy full benchmark,
-không score holdout. Chỉ release production đã verify mới được ghi PostgreSQL.
+không score holdout và không ghi PostgreSQL.
 
 ---
 
@@ -23,15 +15,13 @@ không score holdout. Chỉ release production đã verify mới được ghi Po
 Snapshot       artifacts/manual-runs/20261105-004543/snapshot/snapshot.parquet
 Preprocessor   artifacts/preprocessing-runs/pre-20261105-004543
 Logistic v2    artifacts/model-runs/model-shap-v2-20261105
-XGBoost v2     artifacts/model-runs/xgboost-production-v2-20261109
-Benchmark      artifacts/benchmark-runs/<validation-only-run>
-XGB release    artifacts/model-releases/<xgb-production-release>
-Rollback       artifacts/model-releases/logistic-production-20261105
+Benchmark      artifacts/benchmark-runs/random-forest-validation-20261105-retry3
+Evaluation     artifacts/evaluation-runs/logistic-release-evaluation-20261105
+Release        artifacts/model-releases/logistic-production-20261105
 ```
 
-XGBoost là operational primary; Logistic là rollback và Random Forest B chỉ là
-benchmark challenger. Đây là governance promotion trên validation, không phải
-kết luận superiority từ holdout mới.
+Logistic Regression tiếp tục là production model. Random Forest B chỉ là
+validation release candidate; không có kết luận holdout mới và không có TreeSHAP.
 
 ---
 
@@ -78,7 +68,7 @@ Chạy toàn bộ repository:
 Kết quả tham chiếu hiện tại:
 
 ```text
-Chạy suite hiện tại và ghi lại số pass/skip thực tế; không hard-code kết quả cũ.
+163 passed, 8 skipped
 ```
 
 Các test PostgreSQL được skip khi máy không có DB local là hành vi bình thường.

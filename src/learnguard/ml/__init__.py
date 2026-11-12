@@ -1,1 +1,1 @@
-"""Train-only preprocessing, model artifacts, evaluation, and scoring modules."""
+"""Train-only preprocessing and Logistic baseline artifact modules."""

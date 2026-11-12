@@ -1,4 +1,4 @@
-"""Auditable model-native SHAP artifacts for registered scoring models."""
+"""Auditable Linear SHAP artifacts for the published Logistic model."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from learnguard.ml.model_interface import load_scoring_model
 from learnguard.ml.preprocessing import _file_hash, _prepare_split, _validate_run_id
 from learnguard.ml.scoring import _pseudonymous_key, _validate_splits
 
-EXPLANATION_SCHEMA_VERSION = "shap-explanations.v2"
+EXPLANATION_SCHEMA_VERSION = "linear-shap-explanations.v1"
 
 
 @dataclass(frozen=True)
@@ -138,24 +138,11 @@ def _plots(plot_dir: Path, matrix: np.ndarray, values: np.ndarray,
 def build_shap_artifact(snapshot_path: Path | str, model_artifact_dir: Path | str,
                         preprocessing_artifact_dir: Path | str,
                         artifacts_dir: Path | str = Path("artifacts"),
-                        run_id: str = "shap",
-                        splits: Sequence[str] | None = None) -> ExplainabilityReport:
-    """Publish vectorized, train-background model-native SHAP explanations."""
+                        run_id: str = "shap", splits: Sequence[str] = SPLITS) -> ExplainabilityReport:
+    """Publish vectorized, train-background Linear SHAP explanations."""
     snapshot_path = Path(snapshot_path)
     run_id = _validate_run_id(run_id)
-    manifest_path = Path(model_artifact_dir) / "model.manifest.json"
-    if not manifest_path.is_file():
-        raise FileNotFoundError(f"model_manifest_missing:{manifest_path}")
-    model_manifest = json.loads(manifest_path.read_text())
-    from learnguard.ml.xgboost_training import XGBOOST_MODEL_TYPE
-
-    is_xgboost = model_manifest.get("model_type") == XGBOOST_MODEL_TYPE
-    requested = _validate_splits(
-        ("validation",) if splits is None and is_xgboost
-        else SPLITS if splits is None else splits
-    )
-    if is_xgboost and "holdout" in requested:
-        raise ValueError("explain_raw_xgboost_holdout_forbidden")
+    requested = _validate_splits(splits)
     target = Path(artifacts_dir) / "explainability-runs" / run_id
     if target.exists():
         raise FileExistsError(f"explainability_run_id_exists:{run_id}")
@@ -172,10 +159,8 @@ def build_shap_artifact(snapshot_path: Path | str, model_artifact_dir: Path | st
         prepared = _prepare_split(split, snapshot.frame(split))
         matrix = model.transform(prepared.X)
         explanation = model.explain_many(matrix)
-        if "shap" not in explanation.method:
-            raise ValueError("shap_model_explanation_required")
-        if explanation.output_space != "log_odds":
-            raise ValueError("shap_output_space_unsupported")
+        if not explanation.method.startswith("linear-shap"):
+            raise ValueError("shap_requires_logistic_model_v2")
         transformed, business = _local_frames(
             prepared.keys, split, explanation.feature_names, explanation.values,
             explanation.expected_value, explanation.output_values,
@@ -185,10 +170,6 @@ def build_shap_artifact(snapshot_path: Path | str, model_artifact_dir: Path | st
         matrices.append(matrix)
         all_values.append(explanation.values)
         all_outputs.append(explanation.output_values)
-        if expected is not None and not np.isclose(
-            expected, explanation.expected_value, atol=1e-12, rtol=0,
-        ):
-            raise ValueError("shap_expected_value_changed_between_splits")
         expected = explanation.expected_value
         method, output_space = explanation.method, explanation.output_space
     assert expected is not None
@@ -199,8 +180,7 @@ def build_shap_artifact(snapshot_path: Path | str, model_artifact_dir: Path | st
         raise ValueError("shap_values_non_finite")
     errors = np.abs(expected + values.sum(axis=1) - outputs)
     max_error = float(errors.max(initial=0.0))
-    tolerance = 1e-5 if method.startswith("tree-shap") else 1e-8
-    if max_error > tolerance:
+    if max_error > 1e-8:
         raise ValueError(f"shap_additivity_failed:{max_error}")
     local = pd.concat(local_parts, ignore_index=True)
     business = pd.concat(business_parts, ignore_index=True)
@@ -242,8 +222,6 @@ def build_shap_artifact(snapshot_path: Path | str, model_artifact_dir: Path | st
             "splits": list(requested), "row_count": len(local),
             "feature_count": len(model.feature_names), "method": method,
             "output_space": output_space, "background_split": "train",
-            "explanation_family": "tree_shap" if method.startswith("tree-shap") else "linear_shap",
-            "additivity_tolerance": tolerance,
             "maximum_additivity_error": max_error,
             "top_positive_signals": global_frame.sort_values(
                 "mean_signed_shap", ascending=False, kind="stable",

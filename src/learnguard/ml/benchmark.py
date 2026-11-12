@@ -27,21 +27,14 @@ from sklearn.ensemble import (
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import PrecisionRecallDisplay, RocCurveDisplay
 from threadpoolctl import threadpool_limits
-import xgboost
-from xgboost import XGBClassifier
 
 from learnguard.data.loading import load_snapshot_partitions
 from learnguard.ml.evaluation import binary_metrics, fairness_slices, select_f1_threshold
-from learnguard.ml.json_utils import json_safe, strict_json_dumps
 from learnguard.ml.preprocessing import (
     _file_hash, _prepare_split, _validate_run_id, load_preprocessing_artifact,
 )
 from learnguard.ml.scoring import _pseudonymous_key
 from learnguard.ml.training import LOGISTIC_BASELINE_PARAMS
-from learnguard.ml.xgboost_training import (
-    LEGACY_XGBOOST_BASELINE_PARAMS,
-    XGBOOST_PRODUCTION_PARAMS,
-)
 
 BENCHMARK_SCHEMA_VERSION = "model-benchmark.v2"
 
@@ -61,9 +54,8 @@ class BenchmarkReport:
     holdout_report_path: Path | None
 
 
-def _candidate_models(*, include_xgboost: bool = True) -> list[tuple[str, object]]:
-    """Return bounded candidates; XGBoost is validation-only by policy."""
-    candidates: list[tuple[str, object]] = [
+def _candidate_models() -> list[tuple[str, object]]:
+    return [
         ("dummy_prior", DummyClassifier(strategy="prior", random_state=42)),
         ("logistic_baseline", LogisticRegression(**LOGISTIC_BASELINE_PARAMS)),
         ("extra_trees_a", ExtraTreesClassifier(
@@ -102,18 +94,6 @@ def _candidate_models(*, include_xgboost: bool = True) -> list[tuple[str, object
             random_state=42, n_jobs=1,
         )),
     ]
-    if include_xgboost:
-        candidates.extend([
-            ("xgboost_shallow", XGBClassifier(**{
-                **LEGACY_XGBOOST_BASELINE_PARAMS,
-                "n_estimators": 250, "max_depth": 3, "learning_rate": 0.05,
-                "min_child_weight": 5, "subsample": 1.0,
-                "colsample_bytree": 1.0, "reg_lambda": 2.0,
-            })),
-            ("xgboost_baseline", XGBClassifier(**LEGACY_XGBOOST_BASELINE_PARAMS)),
-            ("xgboost_regularized", XGBClassifier(**XGBOOST_PRODUCTION_PARAMS)),
-        ])
-    return candidates
 
 
 def _scores(model: object, matrix: np.ndarray) -> np.ndarray:
@@ -237,9 +217,6 @@ def run_benchmark(snapshot_path: Path | str, preprocessing_artifact_dir: Path | 
     preprocessor = load_preprocessing_artifact(preprocessing_artifact_dir, snapshot_path)
     matrices = {name: preprocessor.transform(item.X) for name, item in prepared.items()}
     targets = {name: item.y.to_numpy(dtype=np.int64) for name, item in prepared.items()}
-    candidate_models = _candidate_models(
-        include_xgboost=evaluation_scope == "validation_only",
-    )
 
     target.parent.mkdir(parents=True, exist_ok=True)
     staging = target.parent / f".{run_id}.staging-{uuid.uuid4().hex}"
@@ -262,7 +239,7 @@ def run_benchmark(snapshot_path: Path | str, preprocessing_artifact_dir: Path | 
         validation_predictions = validation_predictions.drop(columns=["id_student"])
         validation_predictions["split"] = "validation"
         validation_predictions["label"] = targets["validation"]
-        for name, model in candidate_models:
+        for name, model in _candidate_models():
             started = time.perf_counter()
             with threadpool_limits(limits=1):
                 model.fit(matrices["train"], targets["train"])
@@ -297,7 +274,7 @@ def run_benchmark(snapshot_path: Path | str, preprocessing_artifact_dir: Path | 
             validation_slices.append(slices)
             candidate_configs[name] = {
                 "class": f"{type(model).__module__}.{type(model).__name__}",
-                "parameters": json_safe(model.get_params(deep=False)),
+                "parameters": model.get_params(deep=False),
                 "config_sha256": _config_hash(model),
                 "validation_probability_sha256": _probability_hash(validation_scores),
                 "validation_metrics": metrics,
@@ -314,7 +291,7 @@ def run_benchmark(snapshot_path: Path | str, preprocessing_artifact_dir: Path | 
             "evaluation_scope": evaluation_scope,
             "validation_leader": winner,
             "winner": winner if evaluation_scope == "full" else None,
-            "parameters": json_safe(models[winner].get_params(deep=False)),
+            "parameters": models[winner].get_params(deep=False),
             "selected_threshold": threshold,
             "selection_policy": ["validation_pr_auc", "validation_recall_at_top_20_pct", "lower_ece", "lower_inference_latency"],
             "threshold_policy": "maximum_validation_f1_tie_higher_threshold",
@@ -335,19 +312,19 @@ def run_benchmark(snapshot_path: Path | str, preprocessing_artifact_dir: Path | 
             staging / "validation_predictions.parquet", index=False,
         )
         (staging / "candidate_configurations.json").write_text(
-            strict_json_dumps(candidate_configs, indent=2, sort_keys=True, default=str)
+            json.dumps(candidate_configs, indent=2, sort_keys=True, default=str)
         )
         if evaluation_scope == "validation_only":
             selection_path = staging / "validation_selection.json"
             locked_path: Path | None = None
             holdout_report_path: Path | None = None
-            selection_path.write_text(strict_json_dumps(
+            selection_path.write_text(json.dumps(
                 selection, indent=2, sort_keys=True, default=str,
             ))
         else:
             locked_path = staging / "locked_config.json"
             selection_path = locked_path
-            locked_path.write_text(strict_json_dumps(
+            locked_path.write_text(json.dumps(
                 selection, indent=2, sort_keys=True, default=str,
             ))
             locked_hash = _file_hash(locked_path)
@@ -399,7 +376,7 @@ def run_benchmark(snapshot_path: Path | str, preprocessing_artifact_dir: Path | 
                 "evaluated_at": datetime.now(timezone.utc).isoformat(),
             }
             holdout_report_path = staging / "holdout_final_report.json"
-            holdout_report_path.write_text(strict_json_dumps(
+            holdout_report_path.write_text(json.dumps(
                 holdout_report, indent=2, sort_keys=True,
             ))
         report = {
@@ -407,7 +384,6 @@ def run_benchmark(snapshot_path: Path | str, preprocessing_artifact_dir: Path | 
             "run_id": run_id, "snapshot_version": snapshot_version,
             "preprocessor_version": preprocessor.manifest["preprocessor_version"],
             "candidate_count": len(validation_rows),
-            "xgboost_candidates_included": evaluation_scope == "validation_only",
             "winner": winner if evaluation_scope == "full" else None,
             "validation_leader": winner,
             "selected_threshold": threshold,
@@ -416,14 +392,9 @@ def run_benchmark(snapshot_path: Path | str, preprocessing_artifact_dir: Path | 
             "production_release_eligible": evaluation_scope == "full",
             "holdout_prediction_calls": 1 if evaluation_scope == "full" else 0,
             "random_seed": 42, "native_threads": 1,
-            "package_versions": {
-                "numpy": np.__version__, "pandas": pd.__version__,
-                "scikit_learn": sklearn.__version__, "xgboost": xgboost.__version__,
-            },
+            "package_versions": {"numpy": np.__version__, "pandas": pd.__version__, "scikit_learn": sklearn.__version__},
         }
-        (staging / "benchmark_report.json").write_text(
-            strict_json_dumps(report, indent=2, sort_keys=True)
-        )
+        (staging / "benchmark_report.json").write_text(json.dumps(report, indent=2, sort_keys=True))
         (staging / "model_card.md").write_text(
             f"# Validation leader: {winner}\n\n"
             f"Snapshot: `{snapshot_version}`  \n"
@@ -446,10 +417,8 @@ def run_benchmark(snapshot_path: Path | str, preprocessing_artifact_dir: Path | 
             "schema_version": BENCHMARK_SCHEMA_VERSION, "run_id": run_id,
             "files": {str(p.relative_to(staging)): _file_hash(p) for p in sorted(files)},
         }
-        (staging / "manifest.json").write_text(
-            strict_json_dumps(manifest, indent=2, sort_keys=True)
-        )
-        (staging / "success.json").write_text(strict_json_dumps({
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
+        (staging / "success.json").write_text(json.dumps({
             "schema_version": BENCHMARK_SCHEMA_VERSION, "run_id": run_id,
             "manifest_sha256": _file_hash(staging / "manifest.json"),
             "selection_sha256": _file_hash(selection_path),
