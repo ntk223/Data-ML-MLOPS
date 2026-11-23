@@ -6,3 +6,4 @@ nbformat==5.11.1
 nbclient==0.11.0
 jupyterlab==4.6.4
 pytest==9.1.1
+packaging==26.3

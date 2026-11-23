@@ -119,6 +119,7 @@ class BatchScorer:
               release_id: str | None = None,
               release_manifest_sha256: str | None = None,
               target_alert_fraction: float | None = None,
+              database_write_allowed: bool = False,
               max_students: int | None = None,
               seed: int = 42) -> ScoringReport:
         """Score the requested splits and atomically publish the batch.
@@ -307,6 +308,7 @@ class BatchScorer:
             labeled_positive_count=labeled_positive_count,
             scored_alert_count=scored_alert_count,
             alert_rate_drift_status=drift_status,
+            database_write_allowed=database_write_allowed,
         )
 
     def explain(self, model: ScoringModel, feature_row: np.ndarray) -> list[PredictionSignal]:
@@ -356,18 +358,46 @@ class ScoringReport:
     labeled_positive_count: int | None = None
     scored_alert_count: int | None = None
     alert_rate_drift_status: str | None = None
+    database_write_allowed: bool = False
 
 
 def score_snapshot(snapshot_path: Path | str, model_path: Path | str,
                    preprocessing_artifact_dir: Path | str, output_path: Path | str,
                    threshold: float = 0.5, run_id: str = "score",
-                   splits: Sequence[str] = DEFAULT_SCORE_SPLITS, *,
+                   splits: Sequence[str] | None = None, *,
                    max_students: int | None = None,
                    seed: int = 42) -> ScoringReport:
-    """M5 pipeline entry point: score the snapshot and publish the batch."""
+    """Score a raw artifact; unreleased XGBoost is always file-only.
+
+    Logistic keeps its legacy direct-write compatibility. XGBoost database
+    writes require ``score_release_snapshot`` so governance and release policy
+    cannot be bypassed with an embedded model directory.
+    """
+    import json
+
+    from learnguard.ml.adapters import LOGISTIC_MODEL_TYPE
+    from learnguard.ml.xgboost_training import XGBOOST_MODEL_TYPE
+
+    manifest_path = Path(model_path) / "model.manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"model_manifest_missing:{manifest_path}")
+    manifest = json.loads(manifest_path.read_text())
+    model_type = manifest.get("model_type")
+    database_write_allowed = model_type == LOGISTIC_MODEL_TYPE
+    requested_splits: Sequence[str] = (
+        ("validation",)
+        if splits is None and model_type == XGBOOST_MODEL_TYPE
+        else DEFAULT_SCORE_SPLITS if splits is None else splits
+    )
+    if model_type == XGBOOST_MODEL_TYPE:
+        validated = _validate_splits(requested_splits)
+        if "holdout" in validated:
+            raise ValueError("scoring_raw_xgboost_holdout_forbidden")
+        requested_splits = validated
     return BatchScorer().score(
         snapshot_path, model_path, preprocessing_artifact_dir,
-        output_path, threshold, run_id, splits,
+        output_path, threshold, run_id, requested_splits,
+        database_write_allowed=database_write_allowed,
         max_students=max_students, seed=seed,
     )
 
@@ -389,6 +419,9 @@ def score_release_snapshot(
         and "holdout" in requested
     ):
         raise ValueError("scoring_release_holdout_forbidden")
+    disallowed = sorted(set(requested) - set(release.allowed_score_splits))
+    if disallowed:
+        raise ValueError(f"scoring_release_split_forbidden:{','.join(disallowed)}")
     target_fraction = release.manifest.get("target_alert_fraction")
     if (
         isinstance(target_fraction, bool)
@@ -407,6 +440,7 @@ def score_release_snapshot(
         release_id=release.release_id,
         release_manifest_sha256=_file_hash(manifest_path),
         target_alert_fraction=float(target_fraction),
+        database_write_allowed=release.database_write_allowed,
     )
 
 

@@ -41,6 +41,14 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
     train.add_argument("--run-id", required=True)
 
+    train_xgb = commands.add_parser(
+        "train-xgboost", help="fit fixed train-only CPU XGBoost production contract",
+    )
+    train_xgb.add_argument("--snapshot", type=Path, required=True)
+    train_xgb.add_argument("--preprocessing-artifact-dir", type=Path, required=True)
+    train_xgb.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
+    train_xgb.add_argument("--run-id", required=True)
+
     verify = commands.add_parser("verify-model")
     verify.add_argument("--model-artifact-dir", type=Path, required=True)
     verify.add_argument("--snapshot", type=Path, required=True)
@@ -57,8 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
     score.add_argument(
         "--split", action="append", default=None,
         help=(
-            "split to score (repeatable or comma-separated; legacy default: "
-            "all three; release mode requires an explicit split)"
+            "split to score (repeatable or comma-separated; raw XGBoost "
+            "defaults to validation, legacy Logistic defaults to all three, "
+            "release mode requires an explicit split)"
         ),
     )
     score.add_argument(
@@ -81,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="seed for --max-students subsampling (default: 42)",
     )
 
-    explain = commands.add_parser("explain-shap", help="publish Linear SHAP artifacts")
+    explain = commands.add_parser("explain-shap", help="publish model-native SHAP artifacts")
     explain.add_argument("--snapshot", type=Path, required=True)
     explain.add_argument("--model-artifact-dir", type=Path, required=True)
     explain.add_argument("--preprocessing-artifact-dir", type=Path, required=True)
@@ -99,6 +108,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="fit/select on train+validation without loading or evaluating holdout",
     )
 
+    comparison = commands.add_parser(
+        "publish-model-comparison",
+        help="render a verified validation-only Logistic/RF/XGBoost comparison",
+    )
+    comparison.add_argument("--benchmark-artifact-dir", type=Path, required=True)
+    comparison.add_argument("--xgboost-model-artifact-dir", type=Path, required=True)
+    comparison.add_argument("--logistic-model-artifact-dir", type=Path, required=True)
+    comparison.add_argument("--snapshot", type=Path, required=True)
+    comparison.add_argument("--preprocessing-artifact-dir", type=Path, required=True)
+    comparison.add_argument(
+        "--output", type=Path,
+        default=Path("docs/MODEL_BENCHMARK_COMPARISON.md"),
+    )
+
     release_eval = commands.add_parser(
         "evaluate-validation-release",
         help="build validation-only threshold and confusion-matrix artifacts",
@@ -109,9 +132,13 @@ def build_parser() -> argparse.ArgumentParser:
     release_eval.add_argument("--preprocessing-artifact-dir", type=Path, required=True)
     release_eval.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
     release_eval.add_argument("--run-id", required=True)
+    release_eval.add_argument(
+        "--candidate-name", default=None,
+        help="benchmark candidate matching the model artifact (default: dispatch by model type)",
+    )
 
     create_release = commands.add_parser(
-        "create-release", help="publish an immutable Logistic production release",
+        "create-release", help="publish an immutable model release or validation candidate",
     )
     create_release.add_argument("--snapshot", type=Path, required=True)
     create_release.add_argument("--model-artifact-dir", type=Path, required=True)
@@ -119,9 +146,25 @@ def build_parser() -> argparse.ArgumentParser:
     create_release.add_argument("--evaluation-artifact-dir", type=Path, required=True)
     create_release.add_argument("--artifacts-dir", type=Path, default=Path("artifacts"))
     create_release.add_argument("--run-id", required=True)
+    create_release.add_argument(
+        "--release-status", choices=("production", "validation_candidate"),
+        default=None, help="default: status proven by the evaluation artifact",
+    )
+    create_release.add_argument(
+        "--promotion-decision", type=Path, default=None,
+        help="promotion-decision.v2 governance artifact required for XGBoost production",
+    )
+    create_release.add_argument(
+        "--ml-gate-artifact-dir", type=Path, default=None,
+        help="published passing ML-gate directory required for XGBoost production",
+    )
+    create_release.add_argument(
+        "--rollback-release-artifact-dir", type=Path, default=None,
+        help="immutable Logistic production release required as XGBoost rollback baseline",
+    )
 
     verify_release = commands.add_parser(
-        "verify-release", help="verify a model-release.v1 artifact",
+        "verify-release", help="verify a model-release.v1/v2/v3/v4 artifact",
     )
     verify_release.add_argument("--release-artifact-dir", type=Path, required=True)
     verify_release.add_argument("--snapshot", type=Path, required=True)
@@ -248,6 +291,8 @@ def _write_predictions_to_store(report: object, args: argparse.Namespace) -> Non
 
     if not isinstance(report, ScoringReport):
         raise ValueError("prediction_store_report_invalid")
+    if not report.database_write_allowed:
+        raise ValueError("prediction_store_candidate_release_forbidden")
     frame = pd.read_parquet(report.output_path)
     store = PredictionStore(PredictionStoreConfig(dsn=dsn, table=args.pg_table))
     with store:
@@ -278,6 +323,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "train-logistic":
             from learnguard.ml.training import train_logistic_baseline
             result = train_logistic_baseline(
+                args.snapshot,
+                args.preprocessing_artifact_dir,
+                args.artifacts_dir,
+                args.run_id,
+            )
+        elif args.command == "train-xgboost":
+            from learnguard.ml.xgboost_training import train_xgboost_model
+            result = train_xgboost_model(
                 args.snapshot,
                 args.preprocessing_artifact_dir,
                 args.artifacts_dir,
@@ -318,7 +371,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     output_path,
                     0.5 if args.threshold is None else args.threshold,
                     args.run_id,
-                    splits=_requested_splits(args.split),
+                    splits=(
+                        None if args.split is None
+                        else _requested_splits(args.split)
+                    ),
                     max_students=args.max_students,
                     seed=args.seed,
                 )
@@ -328,7 +384,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = build_shap_artifact(
                 args.snapshot, args.model_artifact_dir,
                 args.preprocessing_artifact_dir, args.artifacts_dir,
-                args.run_id, splits=_requested_splits(args.split),
+                args.run_id, splits=(
+                    None if args.split is None else _requested_splits(args.split)
+                ),
             )
         elif args.command == "benchmark":
             from learnguard.ml.benchmark import run_benchmark
@@ -339,19 +397,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "validation_only" if args.validation_only else "full"
                 ),
             )
+        elif args.command == "publish-model-comparison":
+            from learnguard.ml.model_comparison import publish_model_comparison
+            result = publish_model_comparison(
+                args.benchmark_artifact_dir,
+                args.xgboost_model_artifact_dir,
+                args.logistic_model_artifact_dir,
+                args.snapshot,
+                args.preprocessing_artifact_dir,
+                args.output,
+            )
         elif args.command == "evaluate-validation-release":
             from learnguard.ml.release import build_validation_evaluation_artifact
             result = build_validation_evaluation_artifact(
                 args.snapshot, args.benchmark_artifact_dir,
                 args.model_artifact_dir, args.preprocessing_artifact_dir,
-                args.artifacts_dir, args.run_id,
+                args.artifacts_dir, args.run_id, args.candidate_name,
             )
         elif args.command == "create-release":
             from learnguard.ml.release import build_model_release
             result = build_model_release(
                 args.snapshot, args.model_artifact_dir,
                 args.preprocessing_artifact_dir, args.evaluation_artifact_dir,
-                args.artifacts_dir, args.run_id,
+                args.artifacts_dir, args.run_id, args.release_status,
+                args.promotion_decision, args.ml_gate_artifact_dir,
+                args.rollback_release_artifact_dir,
             )
         elif args.command == "verify-release":
             from learnguard.ml.release import load_and_verify_model_release
@@ -363,10 +433,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "model_version": release.model_version,
                 "snapshot_version": release.snapshot_version,
                 "production_threshold": release.production_threshold,
+                "release_status": release.release_status,
+                "database_write_allowed": release.database_write_allowed,
             }
         else:
-            from learnguard.ml.training import verify_logistic_model_artifact
-            result = verify_logistic_model_artifact(
+            from learnguard.ml.model_interface import verify_model_artifact
+            result = verify_model_artifact(
                 args.model_artifact_dir,
                 args.snapshot,
                 args.preprocessing_artifact_dir,

@@ -301,11 +301,17 @@ learnguard ml preprocess \
   --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
   --artifacts-dir artifacts --run-id <run-id-pre>
 
-# 4b. Train Logistic baseline
+# 4b. Train Logistic fallback/rollback
 learnguard ml train-logistic \
   --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
   --preprocessing-artifact-dir artifacts/preprocessing-runs/<run-id-pre> \
   --artifacts-dir artifacts --run-id <run-id-model>
+
+# 4b-xgb. Train fixed XGBoost operational-primary contract (train-only, CPU)
+learnguard ml train-xgboost \
+  --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
+  --preprocessing-artifact-dir artifacts/preprocessing-runs/<run-id-pre> \
+  --artifacts-dir artifacts --run-id <run-id-xgb>
 
 # 4c. (khuyến nghị) verify artifact trước khi score
 learnguard ml verify-preprocessor --artifact-dir artifacts/preprocessing-runs/<run-id-pre> \
@@ -318,13 +324,13 @@ learnguard ml verify-model --model-artifact-dir artifacts/model-runs/<run-id-mod
 ### Bước 5 — M5: score + xuất prediction batch
 
 ```bash
-# Chế độ file-only (không cần DB — dùng khi backend chưa cấp DSN)
+# Chế độ legacy/file-only. Production phải dùng immutable release ở dưới.
 learnguard ml score \
   --snapshot artifacts/feature_snapshot_m2/snapshot.parquet \
   --model-artifact-dir artifacts/model-runs/<run-id-model> \
   --preprocessing-artifact-dir artifacts/preprocessing-runs/<run-id-pre> \
   --artifacts-dir artifacts --run-id <run-id-score> \
-  --split holdout            # hoặc bỏ để chấm cả 3 tập
+  --split validation
 
 # Chế độ production — thêm cờ ghi DB (DSN do BACKEND cấp qua env):
 #   --pg-dsn "$LEARNGUARD_PG_DSN" --pg-table ml_predictions
@@ -332,7 +338,7 @@ learnguard ml score \
 
 Đầu ra `artifacts/prediction-batches/<run-id-score>/`: `predictions.parquet` + `manifest.json` (prediction-batch.v1) + `success.json`. Backend đọc/verify theo `docs/M5_PREDICTION_BATCH.md`.
 
-Production nên dùng immutable release thay cho threshold CLI:
+Production bắt buộc dùng immutable verified release thay cho threshold CLI:
 
 ```bash
 learnguard ml score \
@@ -344,6 +350,8 @@ learnguard ml score \
 
 Release mode bắt buộc split tường minh, dùng threshold Top-20% đã khóa và xuất
 `release.provenance.json` để theo dõi realized alert rate. Không tự retune khi drift.
+XGBoost production release cần governance decision gắn hashes; candidate không
+được ghi DB và holdout luôn bị cấm. Rollback chỉ đổi release ID về Logistic cũ.
 
 ### Bước 4d — Benchmark và SHAP (ML owner)
 
@@ -351,11 +359,16 @@ Release mode bắt buộc split tường minh, dùng threshold Top-20% đã khó
 HistGradientBoosting và Random Forest. Full mode khóa winner/threshold trên
 validation trước một lần final holdout. Khi holdout đã được tiêu thụ, bắt buộc thêm
 `--validation-only`; chế độ này chỉ load train+validation và không đủ điều kiện
-production release. `learnguard ml explain-shap` xuất local, business-grouped và
-global Linear SHAP cho Logistic v2; background luôn là train và output ở log-odds.
-`evaluate-validation-release` tạo confusion-matrix CSV/PNG tại threshold 0.5,
-max-F1 và production Top-20%; `create-release` đóng gói Logistic + preprocessor +
-threshold. Cả hai chỉ chấp nhận validation provenance và không load holdout.
+production release. Benchmark validation-only có thêm ba cấu hình XGBoost CPU
+cố định; full benchmark chủ động loại XGBoost trước nhánh holdout.
+`learnguard ml explain-shap` xuất local, business-grouped và global SHAP:
+Linear SHAP cho Logistic, Tree SHAP cho XGBoost; background luôn là train và
+output ở log-odds.
+`publish-model-comparison` verify và render bảng XGBoost/Logistic/Random Forest B
+từ validation artifacts. `evaluate-validation-release` tạo confusion-matrix
+CSV/PNG tại threshold 0.5, max-F1 và production Top-20%; `create-release` đóng
+gói model + preprocessor + threshold. Cả hai chỉ chấp nhận validation provenance
+và không load holdout.
 
 ### Bản đồ artifact toàn trình
 

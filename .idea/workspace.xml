@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="08c75648-feaa-44d2-bff0-cb69f4fe2418" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/DEPLOY_VPS.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/DEPLOY_VPS.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/IMPLEMENTATION_TODO.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/IMPLEMENTATION_TODO.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/M4_LOGISTIC_BASELINE.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/M4_LOGISTIC_BASELINE.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/MODEL_EVALUATION_RELEASE_GUIDE.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/MODEL_EVALUATION_RELEASE_GUIDE.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/PIPELINE_GUIDE.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/PIPELINE_GUIDE.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/pyproject.toml" beforeDir="false" afterPath="$PROJECT_DIR$/pyproject.toml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements-dev.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements-dev.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/learnguard/cli.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/learnguard/cli.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/learnguard/evaluation/ml_gate.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/learnguard/evaluation/ml_gate.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/learnguard/ml/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/learnguard/ml/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/learnguard/ml/adapters.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/learnguard/ml/adapters.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/learnguard/ml/benchmark.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/learnguard/ml/benchmark.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/learnguard/ml/explainability.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/learnguard/ml/explainability.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/learnguard/ml/model_interface.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/learnguard/ml/model_interface.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/learnguard/ml/release.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/learnguard/ml/release.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/learnguard/ml/scoring.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/learnguard/ml/scoring.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_benchmark.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_benchmark.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_model_interface.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_model_interface.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/tests/test_release.py" beforeDir="false" afterPath="$PROJECT_DIR$/tests/test_release.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 8,
+  &quot;fromUser&quot;: false
+}</component>
+  <component name="ProjectId" id="3LGcJ51xZslH3He6J88KzfHTjDK" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
+    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;main&quot;,
+    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
+    &quot;kotlin-language-version-configured&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="RunManager">
+    <configuration default="true" type="JetRunConfigurationType">
+      <module name="Data-ML-MLOPS" />
+      <method v="2">
+        <option name="Make" enabled="true" />
+      </method>
+    </configuration>
+    <configuration default="true" type="KotlinStandaloneScriptRunConfigurationType">
+      <module name="Data-ML-MLOPS" />
+      <option name="filePath" />
+      <method v="2" />
+    </configuration>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-jdk-30f59d01ecdd-a203e0a19954-intellij.indexing.shared.core-IU-262.10968.63" />
+        <option value="bundled-js-predefined-d6986cc7102b-4abd2a77f808-JavaScript-IU-262.10968.63" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="08c75648-feaa-44d2-bff0-cb69f4fe2418" name="Changes" comment="" />
+      <created>1793083774177</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1793083774177</updated>
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+</project>

@@ -27,6 +27,16 @@
 - [x] Đóng gói Logistic production dưới `model-release.v1`: model + preprocessor +
   validation evaluation + threshold policy + checksum; release mode của M5 cấm
   threshold override và giữ nguyên `prediction-batch.v1`/PostgreSQL columns.
+- [x] Implement XGBoost CPU train-only (`xgboost-model-v2` production contract;
+  loader giữ v1), native UBJSON,
+  deterministic semantic hashes, Tree SHAP và generic model verifier/adapter.
+- [x] Thêm 3 XGBoost candidate bounded vào validation benchmark và ML gate;
+  không tune/đánh giá lại holdout 2014J.
+- [x] Chọn `xgboost_regularized` làm operational primary; `model-release.v4`
+  chỉ cho production/DB khi validation gate và bound `promotion-decision.v2`
+  cùng hợp lệ. Giữ holdout guard và Logistic rollback v1/v2.
+- [x] Sinh `MODEL_BENCHMARK_COMPARISON.md` deterministic từ verified
+  validation-only artifacts; Random Forest B chỉ là benchmark challenger.
 
 ## Orchestration/Release
 

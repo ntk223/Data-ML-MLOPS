@@ -58,9 +58,9 @@ def test_factory_returns_conforming_logistic_model(model_run):
 def test_factory_rejects_unregistered_model_type(tmp_path):
     (tmp_path / "model.manifest.json").write_text(json.dumps({
         "schema_version": "logistic-model-v1",
-        "model_type": "xgboost.XGBClassifier",
+        "model_type": "example.UnknownClassifier",
     }))
-    with pytest.raises(ValueError, match="unsupported_model_type:xgboost.XGBClassifier"):
+    with pytest.raises(ValueError, match="unsupported_model_type:example.UnknownClassifier"):
         load_scoring_model(tmp_path, "snapshot.parquet", "preprocessor")
 
 

@@ -11,6 +11,7 @@ from learnguard.ml.benchmark import (
     _selection_key,
     run_benchmark,
 )
+from learnguard.ml.xgboost_training import XGBOOST_PRODUCTION_PARAMS
 from tests.test_preprocessing import preprocessing_run
 
 
@@ -69,6 +70,17 @@ def test_benchmark_locks_before_one_shot_holdout(
     assert final_report["holdout_accessed"] is True
     validation = pd.read_csv(report.artifact_dir / "validation_metrics.csv")
     assert {"dummy_prior", "logistic_baseline", "extra_trees_a", "hist_gradient_boosting_a"} <= set(validation["candidate"])
+    assert not validation["candidate"].str.startswith("xgboost").any()
+    assert final_report["candidate_count"] == 10
+    assert final_report["xgboost_candidates_included"] is False
+    configs = json.loads(
+        (report.artifact_dir / "candidate_configurations.json").read_text()
+    )
+    assert not any(name.startswith("xgboost") for name in configs)
+    assert not any(
+        path.name.startswith("xgboost")
+        for path in (report.artifact_dir / "candidates").iterdir()
+    )
     assert (report.artifact_dir / "success.json").is_file()
 
 
@@ -86,7 +98,7 @@ def test_selection_never_trades_lower_pr_auc_for_recall_within_one_millionth():
 
 def test_random_forest_candidate_contracts_are_fixed():
     candidates = dict(_candidate_models())
-    assert len(candidates) == 10
+    assert len(candidates) == 13
     expected = {
         "random_forest_a": {
             "n_estimators": 300, "max_depth": None, "min_samples_leaf": 1,
@@ -107,6 +119,13 @@ def test_random_forest_candidate_contracts_are_fixed():
         assert params["bootstrap"] is True
         assert params["random_state"] == 42
         assert params["n_jobs"] == 1
+
+
+def test_xgboost_production_training_contract_matches_benchmark_candidate():
+    candidate = dict(_candidate_models())["xgboost_regularized"]
+    assert candidate.get_params(deep=False) == candidate.__class__(
+        **XGBOOST_PRODUCTION_PARAMS
+    ).get_params(deep=False)
 
 
 def test_validation_only_never_uses_full_loader_or_publishes_holdout(
@@ -146,13 +165,27 @@ def test_validation_only_never_uses_full_loader_or_publishes_holdout(
     assert payload["holdout_accessed"] is False
     assert payload["production_release_eligible"] is False
     assert payload["holdout_prediction_calls"] == 0
-    assert payload["candidate_count"] == 10
+    assert payload["candidate_count"] == 13
+    assert payload["xgboost_candidates_included"] is True
     names = [str(path.relative_to(report.artifact_dir))
              for path in report.artifact_dir.rglob("*") if path.is_file()]
     assert not any("holdout" in name or "locked_config" in name for name in names)
     predictions = pd.read_parquet(report.artifact_dir / "validation_predictions.parquet")
     assert "id_student" not in predictions
-    assert len([c for c in predictions if c.startswith("risk_score__")]) == 10
+    assert len([c for c in predictions if c.startswith("risk_score__")]) == 13
+
+
+def test_xgboost_candidate_contracts_are_bounded_cpu_only():
+    candidates = dict(_candidate_models())
+    assert {"xgboost_shallow", "xgboost_baseline", "xgboost_regularized"} <= set(candidates)
+    for name in ("xgboost_shallow", "xgboost_baseline", "xgboost_regularized"):
+        params = candidates[name].get_params(deep=False)
+        assert params["objective"] == "binary:logistic"
+        assert params["tree_method"] == "hist"
+        assert params["device"] == "cpu"
+        assert params["random_state"] == 42
+        assert params["n_jobs"] == 1
+        assert 1 <= params["n_estimators"] <= 500
 
 
 def test_cli_parser_accepts_validation_only():
